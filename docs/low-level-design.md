@@ -104,7 +104,7 @@ services/
 
 | Module | Lines (approx.) | Responsibility |
 |--------|-----------------|----------------|
-| `main.py` | 60 | App factory, lifespan, CORS, mount 4 routers |
+| `main.py` | 65 | App factory, lifespan, CORS, mount 4 routers + StaticFiles for uploads |
 | `auth_routes.py` | 123 | 10 auth endpoints (register, login, refresh, OAuth, verification, password reset) |
 | `auth_services.py` | 270 | Registration, login validation, token management, email verification, password reset |
 | `auth_email.py` | 151 | HTML email templates, SMTP dispatch (smtplib, timeout=2) |
@@ -123,6 +123,7 @@ app.include_router(auth_router,         prefix="/api/v1/auth",          tags=["a
 app.include_router(user_router,         prefix="/api/v1/users",         tags=["users"])
 app.include_router(upload_router,       prefix="/api/v1/uploads",       tags=["uploads"])
 app.include_router(notification_router, prefix="/api/v1/notifications", tags=["notifications"])
+app.mount("/uploads", StaticFiles(directory=upload_dir), name="uploads")
 ```
 
 ### 3.3 Auth Flow — Sequence
@@ -321,10 +322,10 @@ POST /api/v1/chat/rooms/{room_id}/messages {body: "Hello @pulse"}
 |-----------|---------------|
 | `ROUTE_MAP` | List of (URL prefix, backend service URL) tuples |
 | `proxy()` | Catch-all route that forwards HTTP requests via httpx |
+| `proxy_uploads()` | Proxies `GET /uploads/*` to Core service (avatars, attachments) |
 | `_redis_subscriber_loop()` | Long-running async task: Redis → WebSocket bridge |
 | `_redis_channel_to_ws_channel()` | Channel name mapping (e.g., `chat:room:X` → `chat:X`) |
 | `ConnectionManager` | Manages WebSocket connections per channel (from shared lib) |
-| `StaticFiles("/uploads")` | Serves uploaded files from shared Docker volume |
 
 ### 6.2 Route Resolution
 

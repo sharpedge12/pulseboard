@@ -493,7 +493,7 @@ def _generate_forum_bot_reply(
     thread_id: int,
     thread_title: str,
     thread_body: str,
-    parent_post_id: int,
+    parent_post_id: int | None,
     user_message: str,
     poster_user_id: int,
 ) -> None:
@@ -503,7 +503,7 @@ def _generate_forum_bot_reply(
     request-scoped session.
     """
     from shared.core.database import SessionLocal
-    from shared.core.events import connection_manager, publish_event
+    from shared.core.events import publish_event
     from shared.models.post import Post
     from fastapi.encoders import jsonable_encoder
 
@@ -579,7 +579,7 @@ def _generate_chat_bot_reply(
     request-scoped session.
     """
     from shared.core.database import SessionLocal
-    from shared.core.events import connection_manager, publish_event
+    from shared.core.events import publish_event
     from shared.models.chat import Message as ChatMessage
     from shared.schemas.chat import ChatMessageResponse, ChatMessageSenderResponse
     from fastapi.encoders import jsonable_encoder
@@ -649,7 +649,7 @@ def schedule_forum_bot_reply(
     thread_id: int,
     thread_title: str,
     thread_body: str,
-    parent_post_id: int,
+    parent_post_id: int | None,
     user_message: str,
     poster_user_id: int,
 ) -> None:

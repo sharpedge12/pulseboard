@@ -88,7 +88,7 @@ function Pagination({
               key={page}
               className={
                 page === currentPage
-                  ? 'pagination-btn pagination-num pagination-active'
+                  ? 'pagination-btn pagination-num active'
                   : 'pagination-btn pagination-num'
               }
               type="button"

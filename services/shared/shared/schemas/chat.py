@@ -1,18 +1,30 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from shared.services.sanitize import sanitize_text
 
 
 class ChatRoomCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     room_type: str = Field(pattern=r"^(direct|group)$")
-    member_ids: list[int] = Field(default_factory=list)
+    member_ids: list[int] = Field(default_factory=list, max_length=50)
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, v: str) -> str:
+        return sanitize_text(v)
 
 
 class ChatMessageCreateRequest(BaseModel):
     body: str = Field(min_length=1, max_length=5000)
     reply_to_message_id: int | None = None
-    attachment_ids: list[int] = Field(default_factory=list)
+    attachment_ids: list[int] = Field(default_factory=list, max_length=20)
+
+    @field_validator("body")
+    @classmethod
+    def clean_body(cls, v: str) -> str:
+        return sanitize_text(v)
 
 
 class ChatRoomMemberResponse(BaseModel):

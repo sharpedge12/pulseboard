@@ -2,9 +2,11 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from shared.core.config import settings
 from shared.core.database import init_db
@@ -38,6 +40,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from shared.core.security_headers import SecurityHeadersMiddleware  # noqa: E402
+from shared.core.rate_limit import RateLimitMiddleware  # noqa: E402
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(
+    RateLimitMiddleware,
+    rate_limit=20,
+    window_seconds=60,
+    paths=[f"{settings.api_v1_prefix}/auth/"],
+)
+
 
 @app.get("/health", tags=["health"])
 def health_check() -> dict[str, str]:
@@ -51,3 +64,8 @@ app.include_router(upload_router, prefix=prefix + "/uploads", tags=["uploads"])
 app.include_router(
     notification_router, prefix=prefix + "/notifications", tags=["notifications"]
 )
+
+# Serve uploaded files (avatars, attachments) as static assets
+_upload_root = Path(settings.upload_dir)
+_upload_root.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(_upload_root)), name="uploads")

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { apiRequest, getHeaders } from '../lib/api';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 
@@ -9,8 +9,9 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [isLoadingProfile, setIsLoadingProfile] = useState(false);
 
-  async function refreshProfile(activeSession = session) {
-    if (!activeSession?.access_token) {
+  const refreshProfile = useCallback(async (activeSession) => {
+    const sess = activeSession || session;
+    if (!sess?.access_token) {
       setProfile(null);
       return null;
     }
@@ -18,7 +19,7 @@ export function AuthProvider({ children }) {
     setIsLoadingProfile(true);
     try {
       const data = await apiRequest('/users/me', {
-        headers: getHeaders(activeSession.access_token),
+        headers: getHeaders(sess.access_token),
       });
       setProfile(data);
       return data;
@@ -30,7 +31,7 @@ export function AuthProvider({ children }) {
     } finally {
       setIsLoadingProfile(false);
     }
-  }
+  }, [session, setSession]);
 
   useEffect(() => {
     let ignore = false;
@@ -73,7 +74,7 @@ export function AuthProvider({ children }) {
         setProfile(null);
       },
     }),
-    [isLoadingProfile, profile, session, setSession]
+    [isLoadingProfile, profile, session, setSession, refreshProfile]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

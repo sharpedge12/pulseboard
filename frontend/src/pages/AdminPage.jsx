@@ -24,8 +24,21 @@ function AdminPage() {
   const isStaff = ['admin', 'moderator'].includes(profile?.role);
   const panelTitle = isAdmin ? 'Admin Dashboard' : 'Moderator Dashboard';
 
-  // Default tab: admin sees users, mod sees threads
-  const [activeTab, setActiveTab] = useState(isAdmin ? 'users' : 'threads');
+  // Default tab: admin sees users, mod sees threads.
+  // On first render profile may be null so isAdmin is false — use 'threads' as
+  // initial value and correct it once the profile arrives.
+  const [activeTab, setActiveTab] = useState('threads');
+  const [tabInitialized, setTabInitialized] = useState(false);
+
+  // Once the profile loads, set the correct initial tab (admin -> 'users')
+  useEffect(() => {
+    if (profile && !tabInitialized) {
+      setTabInitialized(true);
+      if (profile.role === 'admin') {
+        setActiveTab('users');
+      }
+    }
+  }, [profile, tabInitialized]);
 
   // Action form state for moderation actions on reports
   const [actionForm, setActionForm] = useState({
@@ -433,10 +446,8 @@ function AdminPage() {
     return (
       <section className="page-grid admin-layout">
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Staff Only</h3>
-            <span className="muted-copy">Restricted area</span>
-          </div>
+          <h3>Staff Only</h3>
+          <span className="muted-copy">Restricted area</span>
           <p className="muted-copy">
             The moderation panel is only available to admins and moderators.
           </p>
@@ -448,10 +459,8 @@ function AdminPage() {
   return (
     <section className="page-grid admin-layout">
       {/* Dashboard header */}
-      <div className="panel-header">
-        <h3>{panelTitle}</h3>
-        <span className="muted-copy">{profile?.role} tools</span>
-      </div>
+      <h3>{panelTitle}</h3>
+      <span className="muted-copy">{profile?.role} tools</span>
 
       {/* Stat cards */}
       {summary ? (
@@ -494,7 +503,7 @@ function AdminPage() {
         {/* User Controls tab — admin only */}
         {isAdmin && (
           <button
-            className={activeTab === 'users' ? 'admin-tab admin-tab-active' : 'admin-tab'}
+            className={activeTab === 'users' ? 'admin-tab active' : 'admin-tab'}
             type="button"
             onClick={() => setActiveTab('users')}
           >
@@ -503,7 +512,7 @@ function AdminPage() {
         )}
         {isAdmin && (
           <button
-            className={activeTab === 'moderators' ? 'admin-tab admin-tab-active' : 'admin-tab'}
+            className={activeTab === 'moderators' ? 'admin-tab active' : 'admin-tab'}
             type="button"
             onClick={() => setActiveTab('moderators')}
           >
@@ -511,38 +520,38 @@ function AdminPage() {
           </button>
         )}
         <button
-          className={activeTab === 'threads' ? 'admin-tab admin-tab-active' : 'admin-tab'}
+          className={activeTab === 'threads' ? 'admin-tab active' : 'admin-tab'}
           type="button"
           onClick={() => setActiveTab('threads')}
         >
           Thread Controls
         </button>
         <button
-          className={activeTab === 'reports' ? 'admin-tab admin-tab-active' : 'admin-tab'}
+          className={activeTab === 'reports' ? 'admin-tab active' : 'admin-tab'}
           type="button"
           onClick={() => setActiveTab('reports')}
         >
           Reports
           {summary?.pending_reports > 0 && (
-            <span className="report-badge">{summary.pending_reports}</span>
+            <span className="notif-badge">{summary.pending_reports}</span>
           )}
         </button>
         <button
-          className={activeTab === 'community' ? 'admin-tab admin-tab-active' : 'admin-tab'}
+          className={activeTab === 'community' ? 'admin-tab active' : 'admin-tab'}
           type="button"
           onClick={() => setActiveTab('community')}
         >
           {isAdmin ? 'Create Community' : 'Request Community'}
         </button>
         <button
-          className={activeTab === 'requests' ? 'admin-tab admin-tab-active' : 'admin-tab'}
+          className={activeTab === 'requests' ? 'admin-tab active' : 'admin-tab'}
           type="button"
           onClick={() => setActiveTab('requests')}
         >
           Community Requests
         </button>
         <button
-          className={activeTab === 'activity' ? 'admin-tab admin-tab-active' : 'admin-tab'}
+          className={activeTab === 'activity' ? 'admin-tab active' : 'admin-tab'}
           type="button"
           onClick={() => setActiveTab('activity')}
         >
@@ -553,25 +562,23 @@ function AdminPage() {
       {/* User Controls tab — admin only */}
       {isAdmin && activeTab === 'users' && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>User Controls</h3>
-            <span className="muted-copy">Full moderation</span>
-          </div>
-          <div className="admin-list">
+          <h3>User Controls</h3>
+          <span className="muted-copy">Full moderation</span>
+          <div className="stack-gap">
             {manageableUsers.length === 0 && (
               <p className="muted-copy">
                 No users available for your moderation level.
               </p>
             )}
             {manageableUsers.map((user) => (
-              <div key={user.id} className="admin-item">
+              <div key={user.id} className="admin-list-item">
                 <div>
                   <UserIdentity user={user} />
                   <p className="muted-copy">
                     {user.email} &middot; {user.role}
                   </p>
                 </div>
-                <div className="inline-actions">
+                <div className="admin-list-item-actions">
                   {user.can_change_role && user.role !== 'moderator' && (
                     <button
                       className="secondary-button"
@@ -636,32 +643,30 @@ function AdminPage() {
             className="drawer-backdrop"
             onClick={() => setAssignModalUser(null)}
           />
-          <div className="assign-modal">
+          <div className="modal-card">
             <h4>Assign communities to {assignModalUser.username}</h4>
             <p className="muted-copy">
               Select which communities this moderator can manage.
               Leave empty to skip assignment for now.
             </p>
-            <div className="assign-category-list">
+            <div className="community-assign-modal">
               {categories.map((cat) => (
-                <button
+                <div
                   key={cat.id}
-                  type="button"
-                  className={`assign-category-item ${
-                    selectedCategories.includes(cat.id)
-                      ? 'assign-category-item-active'
-                      : ''
-                  }`}
-                  onClick={() => toggleCategorySelection(cat.id)}
+                  className="community-assign-item"
                 >
                   <span>r/{cat.slug}</span>
-                  <span>
+                  <button
+                    type="button"
+                    className="community-assign-btn"
+                    onClick={() => toggleCategorySelection(cat.id)}
+                  >
                     {selectedCategories.includes(cat.id) ? '\u2713' : '\u002B'}
-                  </span>
-                </button>
+                  </button>
+                </div>
               ))}
             </div>
-            <div className="assign-modal-actions">
+            <div className="edit-inline-actions" style={{ marginTop: 'var(--space-4)' }}>
               <button
                 className="action-button"
                 type="button"
@@ -685,23 +690,21 @@ function AdminPage() {
       {/* Moderators tab — manage community assignments for existing mods */}
       {isAdmin && activeTab === 'moderators' && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Moderator Communities</h3>
-            <span className="muted-copy">Assign or remove community access for moderators</span>
-          </div>
-          <div className="admin-list">
+          <h3>Moderator Communities</h3>
+          <span className="muted-copy">Assign or remove community access for moderators</span>
+          <div className="stack-gap">
             {users.filter((u) => u.role === 'moderator').length === 0 && (
               <p className="muted-copy">No moderators found. Promote a user first.</p>
             )}
             {users
               .filter((u) => u.role === 'moderator')
               .map((user) => (
-                <div key={user.id} className="admin-item">
+                <div key={user.id} className="admin-list-item">
                   <div>
                     <UserIdentity user={user} />
                     <p className="muted-copy">{user.email}</p>
                   </div>
-                  <div className="inline-actions">
+                  <div className="admin-list-item-actions">
                     <button
                       className="secondary-button"
                       type="button"
@@ -716,8 +719,8 @@ function AdminPage() {
 
           {/* Inline community manager for selected mod */}
           {manageMod && (
-            <div className="panel stack-gap" style={{ marginTop: 'var(--space-md)' }}>
-              <div className="panel-header">
+            <div className="panel stack-gap" style={{ marginTop: 'var(--space-4)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h4>Communities for {manageMod.username}</h4>
                 <button
                   className="secondary-button"
@@ -730,23 +733,21 @@ function AdminPage() {
               {modCatLoading ? (
                 <p className="muted-copy">Loading assignments...</p>
               ) : (
-                <div className="assign-category-list">
+                <div className="community-assign-modal">
                   {categories.map((cat) => (
-                    <button
+                    <div
                       key={cat.id}
-                      type="button"
-                      className={`assign-category-item ${
-                        modCategoryIds.includes(cat.id)
-                          ? 'assign-category-item-active'
-                          : ''
-                      }`}
-                      onClick={() => handleToggleModCategory(cat.id)}
+                      className="community-assign-item"
                     >
                       <span>r/{cat.slug}</span>
-                      <span>
+                      <button
+                        type="button"
+                        className="community-assign-btn"
+                        onClick={() => handleToggleModCategory(cat.id)}
+                      >
                         {modCategoryIds.includes(cat.id) ? '\u2713' : '\u002B'}
-                      </span>
-                    </button>
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -758,27 +759,25 @@ function AdminPage() {
       {/* Thread Controls tab */}
       {activeTab === 'threads' && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Thread Controls</h3>
-            <span className="muted-copy">
-              {isAdmin
-                ? 'Lock and pin discussions'
-                : 'Manage threads in your communities'}
-            </span>
-          </div>
-          <div className="admin-list">
+          <h3>Thread Controls</h3>
+          <span className="muted-copy">
+            {isAdmin
+              ? 'Lock and pin discussions'
+              : 'Manage threads in your communities'}
+          </span>
+          <div className="stack-gap">
             {threads.length === 0 && (
               <p className="muted-copy">No threads to manage.</p>
             )}
             {threads.map((thread) => (
-              <div key={thread.id} className="admin-item">
+              <div key={thread.id} className="admin-list-item">
                 <div>
                   <strong>{thread.title}</strong>
                   <p className="muted-copy">
                     r/{thread.category} &middot; by {thread.author}
                   </p>
                 </div>
-                <div className="inline-actions">
+                <div className="admin-list-item-actions">
                   <button
                     className="secondary-button"
                     type="button"
@@ -815,21 +814,19 @@ function AdminPage() {
       {/* Reports tab */}
       {activeTab === 'reports' && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Content Reports</h3>
-            <span className="muted-copy">Review and act on user reports</span>
-          </div>
+          <h3>Content Reports</h3>
+          <span className="muted-copy">Review and act on user reports</span>
 
           {/* Filter pills */}
-          <div className="report-filters">
+          <div className="pill-row">
             {['pending', 'resolved', 'dismissed', ''].map((f) => (
               <button
                 key={f || 'all'}
                 type="button"
                 className={
                   reportFilter === f
-                    ? 'report-filter-pill report-filter-active'
-                    : 'report-filter-pill'
+                    ? 'pill pill-active'
+                    : 'pill'
                 }
                 onClick={() => setReportFilter(f)}
               >
@@ -839,13 +836,13 @@ function AdminPage() {
           </div>
 
           {/* Report cards */}
-          <div className="admin-list">
+          <div className="stack-gap">
             {reports.length === 0 && (
               <p className="muted-copy">No reports found.</p>
             )}
             {reports.map((report) => (
-              <div key={report.id} className="report-card">
-                <div className="report-card-header">
+              <div key={report.id} className="admin-report-card">
+                <div className="thread-card-meta">
                   <span
                     className={`report-status-badge report-status-${report.status}`}
                   >
@@ -855,47 +852,43 @@ function AdminPage() {
                     {report.entity_type}
                   </span>
                   {report.category_name && (
-                    <span className="report-category">
+                    <span className="muted-copy">
                       r/{report.category_name}
                     </span>
                   )}
-                  <span className="muted-copy report-date">
+                  <span className="muted-copy">
                     {new Date(report.created_at).toLocaleDateString()}
                   </span>
                 </div>
 
-                <div className="report-card-body">
-                  <div className="report-content-preview">
-                    <p className="report-snippet">
-                      {report.content_snippet || '[content unavailable]'}
+                <div>
+                  <p className="muted-copy">
+                    {report.content_snippet || '[content unavailable]'}
+                  </p>
+                  {report.thread_title && (
+                    <p className="muted-copy">
+                      in: {report.thread_title}
                     </p>
-                    {report.thread_title && (
-                      <p className="muted-copy">
-                        in: {report.thread_title}
-                      </p>
-                    )}
-                  </div>
-                  <div className="report-meta">
-                    <p>
-                      <strong>Author:</strong> {report.content_author}
+                  )}
+                  <p>
+                    <strong>Author:</strong> {report.content_author}
+                  </p>
+                  <p>
+                    <strong>Reported by:</strong> {report.reporter_username}
+                  </p>
+                  <p>
+                    <strong>Reason:</strong> {report.reason}
+                  </p>
+                  {report.resolver_username && (
+                    <p className="muted-copy">
+                      Resolved by {report.resolver_username} on{' '}
+                      {new Date(report.resolved_at).toLocaleDateString()}
                     </p>
-                    <p>
-                      <strong>Reported by:</strong> {report.reporter_username}
-                    </p>
-                    <p>
-                      <strong>Reason:</strong> {report.reason}
-                    </p>
-                    {report.resolver_username && (
-                      <p className="muted-copy">
-                        Resolved by {report.resolver_username} on{' '}
-                        {new Date(report.resolved_at).toLocaleDateString()}
-                      </p>
-                    )}
-                  </div>
+                  )}
                 </div>
 
                 {report.status === 'pending' && (
-                  <div className="report-card-actions">
+                  <div className="edit-inline-actions">
                     <button
                       className="secondary-button"
                       type="button"
@@ -925,13 +918,13 @@ function AdminPage() {
                 {/* Inline moderation action form */}
                 {actionForm.reportId === report.id && (
                   <form
-                    className="report-action-form"
+                    className="mod-action-form"
                     onSubmit={handleModerateUser}
                   >
                     <h4>
                       Moderate: {actionForm.targetUsername}
                     </h4>
-                    <div className="report-action-row">
+                    <div className="mod-action-form-row">
                       <label>Action:</label>
                       <select
                         className="input"
@@ -952,7 +945,7 @@ function AdminPage() {
                     </div>
 
                     {actionForm.actionType === 'suspend' && (
-                      <div className="report-action-row">
+                      <div className="mod-action-form-row">
                         <label>Duration (hours):</label>
                         <input
                           className="input"
@@ -970,10 +963,10 @@ function AdminPage() {
                       </div>
                     )}
 
-                    <div className="report-action-row">
+                    <div className="mod-action-form-row">
                       <label>Reason:</label>
                       <textarea
-                        className="input textarea"
+                        className="input"
                         value={actionForm.reason}
                         onChange={(e) =>
                           setActionForm({
@@ -985,7 +978,7 @@ function AdminPage() {
                       />
                     </div>
 
-                    <div className="report-action-buttons">
+                    <div className="edit-inline-actions">
                       <button className="action-button" type="submit">
                         Confirm {actionForm.actionType}
                       </button>
@@ -1008,14 +1001,12 @@ function AdminPage() {
       {/* Create / Request Community tab */}
       {activeTab === 'community' && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>{isAdmin ? 'Create Community' : 'Request Community'}</h3>
-            <span className="muted-copy">
-              {isAdmin
-                ? 'New subreddit-style community'
-                : 'Submit a request for admin approval'}
-            </span>
-          </div>
+          <h3>{isAdmin ? 'Create Community' : 'Request Community'}</h3>
+          <span className="muted-copy">
+            {isAdmin
+              ? 'New subreddit-style community'
+              : 'Submit a request for admin approval'}
+          </span>
           <form className="stack-gap" onSubmit={handleCommunityCreate}>
             <input
               className="input"
@@ -1039,7 +1030,7 @@ function AdminPage() {
               required
             />
             <textarea
-              className="input textarea"
+              className="input"
               placeholder="What is this community for?"
               value={communityForm.description}
               onChange={(e) =>
@@ -1056,25 +1047,23 @@ function AdminPage() {
       {/* Community Requests tab */}
       {activeTab === 'requests' && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Community Requests</h3>
-            <span className="muted-copy">
-              {isAdmin
-                ? 'Review community creation requests from moderators'
-                : 'Your community requests'}
-            </span>
-          </div>
+          <h3>Community Requests</h3>
+          <span className="muted-copy">
+            {isAdmin
+              ? 'Review community creation requests from moderators'
+              : 'Your community requests'}
+          </span>
 
           {/* Filter pills */}
-          <div className="report-filters">
+          <div className="pill-row">
             {['pending', 'approved', 'rejected', ''].map((f) => (
               <button
                 key={f || 'all'}
                 type="button"
                 className={
                   requestFilter === f
-                    ? 'report-filter-pill report-filter-active'
-                    : 'report-filter-pill'
+                    ? 'pill pill-active'
+                    : 'pill'
                 }
                 onClick={() => setRequestFilter(f)}
               >
@@ -1083,13 +1072,13 @@ function AdminPage() {
             ))}
           </div>
 
-          <div className="admin-list">
+          <div className="stack-gap">
             {categoryRequests.length === 0 && (
               <p className="muted-copy">No community requests found.</p>
             )}
             {categoryRequests.map((req) => (
-              <div key={req.id} className="report-card">
-                <div className="report-card-header">
+              <div key={req.id} className="admin-report-card">
+                <div className="thread-card-meta">
                   <span
                     className={`report-status-badge report-status-${req.status}`}
                   >
@@ -1098,33 +1087,29 @@ function AdminPage() {
                   <span className="report-type-badge">
                     r/{req.slug}
                   </span>
-                  <span className="muted-copy report-date">
+                  <span className="muted-copy">
                     {new Date(req.created_at).toLocaleDateString()}
                   </span>
                 </div>
 
-                <div className="report-card-body">
-                  <div className="report-content-preview">
-                    <p><strong>{req.title}</strong></p>
+                <div>
+                  <p><strong>{req.title}</strong></p>
+                  <p className="muted-copy">
+                    {req.description || 'No description provided.'}
+                  </p>
+                  <p>
+                    <strong>Requested by:</strong> {req.requester_username}
+                  </p>
+                  {req.reviewer_username && (
                     <p className="muted-copy">
-                      {req.description || 'No description provided.'}
+                      Reviewed by {req.reviewer_username} on{' '}
+                      {new Date(req.reviewed_at).toLocaleDateString()}
                     </p>
-                  </div>
-                  <div className="report-meta">
-                    <p>
-                      <strong>Requested by:</strong> {req.requester_username}
-                    </p>
-                    {req.reviewer_username && (
-                      <p className="muted-copy">
-                        Reviewed by {req.reviewer_username} on{' '}
-                        {new Date(req.reviewed_at).toLocaleDateString()}
-                      </p>
-                    )}
-                  </div>
+                  )}
                 </div>
 
                 {isAdmin && req.status === 'pending' && (
-                  <div className="report-card-actions">
+                  <div className="edit-inline-actions">
                     <button
                       className="action-button"
                       type="button"
@@ -1150,10 +1135,8 @@ function AdminPage() {
       {/* Activity Log tab */}
       {activeTab === 'activity' && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Activity Log</h3>
-            <span className="muted-copy">Audit trail of actions across the platform</span>
-          </div>
+          <h3>Activity Log</h3>
+          <span className="muted-copy">Audit trail of actions across the platform</span>
 
           {/* Filters */}
           <div className="audit-log-filters">

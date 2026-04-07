@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useChatRoom } from '../hooks/useChatRoom';
 import { apiRequest, API_BASE_URL, getHeaders } from '../lib/api';
+import { validateFile, ATTACHMENT_ACCEPT } from '../lib/uploadUtils';
 import { formatTimeAgo, formatTime } from '../lib/timeUtils';
 import UserIdentity from '../components/UserIdentity';
 import AttachmentList from '../components/AttachmentList';
@@ -109,11 +110,19 @@ function ChatPage() {
       return;
     }
 
+    const file = event.target.files[0];
+    const { valid, error } = validateFile(file);
+    if (!valid) {
+      alert(error);
+      event.target.value = '';
+      return;
+    }
+
     try {
       const formData = new FormData();
       formData.append('linked_entity_type', 'draft');
       formData.append('linked_entity_id', '0');
-      formData.append('file', event.target.files[0]);
+      formData.append('file', file);
       const response = await fetch(`${API_BASE_URL}/uploads`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -123,10 +132,14 @@ function ChatPage() {
       if (response.ok) {
         const data = await response.json();
         setMessageAttachments((c) => [...c, data]);
+      } else {
+        const err = await response.json().catch(() => ({}));
+        alert(err.detail || 'Upload failed.');
       }
     } catch (error) {
       console.error('Failed to upload attachment:', error);
     }
+    event.target.value = '';
   }
 
   async function handleCreateGroupRoom(event) {
@@ -225,7 +238,7 @@ function ChatPage() {
 
         {session?.access_token && (
           <div className="rooms-panel-controls">
-            <form className="stack-gap glass-form" onSubmit={handleCreateGroupRoom}>
+            <form className="stack-gap" onSubmit={handleCreateGroupRoom}>
               <input
                 className="input"
                 placeholder="New group name"
@@ -236,7 +249,7 @@ function ChatPage() {
                 Create group
               </button>
             </form>
-            <form className="stack-gap glass-form" onSubmit={handleCreateDirectRoom}>
+            <form className="stack-gap" onSubmit={handleCreateDirectRoom}>
               <input
                 className="input"
                 list="chat-user-list"
@@ -260,7 +273,7 @@ function ChatPage() {
 
         <div className="rooms-panel-list">
           <div className="stack-gap">
-            <span className="card-label">Direct Messages</span>
+            <span className="room-list-label">Direct Messages</span>
             {directRooms.length === 0 && (
               <p className="muted-copy">No direct messages yet.</p>
             )}
@@ -269,29 +282,27 @@ function ChatPage() {
                 key={room.id}
                 className={
                   activeRoomId === room.id
-                    ? 'thread-card room-button room-button-active'
-                    : 'thread-card room-button'
+                    ? 'room-button active-room'
+                    : 'room-button'
                 }
                 type="button"
                 onClick={() => selectRoom(room.id)}
               >
-                <div className="room-button-header">
-                  <strong>{room.display_name || room.name}</strong>
-                  {room.last_message && (
-                    <span className="room-time">{formatTimeAgo(room.last_message.created_at)}</span>
-                  )}
-                </div>
-                <p className="muted-copy">
+                <span className="room-name">{room.display_name || room.name}</span>
+                <span className="room-preview">
                   {room.last_message
                     ? room.last_message.body.slice(0, 50)
                     : 'No messages yet'}
-                </p>
+                </span>
+                {room.last_message && (
+                  <span className="room-time">{formatTimeAgo(room.last_message.created_at)}</span>
+                )}
               </button>
             ))}
           </div>
 
           <div className="stack-gap">
-            <span className="card-label">Groups</span>
+            <span className="room-list-label">Groups</span>
             {groupRooms.length === 0 && (
               <p className="muted-copy">No group rooms yet.</p>
             )}
@@ -300,23 +311,21 @@ function ChatPage() {
                 key={room.id}
                 className={
                   activeRoomId === room.id
-                    ? 'thread-card room-button room-button-active'
-                    : 'thread-card room-button'
+                    ? 'room-button active-room'
+                    : 'room-button'
                 }
                 type="button"
                 onClick={() => selectRoom(room.id)}
               >
-                <div className="room-button-header">
-                  <strong>{room.display_name || room.name}</strong>
-                  {room.last_message && (
-                    <span className="room-time">{formatTimeAgo(room.last_message.created_at)}</span>
-                  )}
-                </div>
-                <p className="muted-copy">
+                <span className="room-name">{room.display_name || room.name}</span>
+                <span className="room-preview">
                   {room.last_message
                     ? room.last_message.body.slice(0, 50)
                     : 'No messages yet'}
-                </p>
+                </span>
+                {room.last_message && (
+                  <span className="room-time">{formatTimeAgo(room.last_message.created_at)}</span>
+                )}
               </button>
             ))}
           </div>
@@ -326,95 +335,93 @@ function ChatPage() {
       {/* Fixed-frame chat area: header pinned top, messages scroll, compose pinned bottom */}
       <div className="chat-frame">
         <div className="chat-frame-header">
-          <div className="panel-header">
-            <h3>
-              {activeRoom ? activeRoom.display_name || activeRoom.name : 'Select a room'}
-            </h3>
+          <h3>
+            {activeRoom ? activeRoom.display_name || activeRoom.name : 'Select a room'}
+          </h3>
+          <div className="edit-inline-actions">
             <span className="muted-copy">{activeRoom?.room_type || 'chat'}</span>
+            {activeRoom?.room_type === 'group' && (
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={copyInviteLink}
+              >
+                Copy share link
+              </button>
+            )}
           </div>
-          {activeRoom?.room_type === 'group' && (
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={copyInviteLink}
-            >
-              Copy share link
-            </button>
-          )}
         </div>
 
-        <div className="chat-frame-messages">
+        <div className="chat-messages">
           {messages.length === 0 && (
-            <div className="chat-empty-state">
-              <div className="chat-empty-icon">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              </div>
+            <div className="chat-empty">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
               <p>No messages yet. Say something!</p>
             </div>
           )}
           {messages.map((message) => (
             <div
               key={message.id}
-              className={`reply-card message-bubble ${
+              className={`chat-message ${
                 message.sender.username === profile?.username ? 'message-own' : ''
               }`}
             >
-              <div className="message-header">
-                <UserIdentity user={message.sender} compact />
-                <span className="message-timestamp" title={message.created_at}>{formatTime(message.created_at)}</span>
+              <div className="chat-message-body">
+                <div className="thread-card-meta">
+                  <UserIdentity user={message.sender} compact />
+                  <span className="timestamp" title={message.created_at}>{formatTime(message.created_at)}</span>
+                </div>
+                <RichText text={message.body} />
+                <AttachmentList attachments={message.attachments} />
               </div>
-              <RichText text={message.body} />
-              <AttachmentList attachments={message.attachments} />
             </div>
           ))}
           <div ref={messageEndRef} />
         </div>
 
-        <div className="chat-frame-compose">
-          <form className="chat-compose-form" onSubmit={handleSendMessage}>
-            <div className="chat-compose-row">
-              <MentionTextarea
-                className="input textarea chat-compose-input"
-                placeholder="Write a message. @ to mention, Enter to send, Shift+Enter for new line."
-                value={messageBody}
-                onChange={setMessageBody}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendMessage(e);
-                  }
-                }}
+        <div className="chat-compose">
+          <MentionTextarea
+            className="input"
+            placeholder="Write a message. @ to mention, Enter to send, Shift+Enter for new line."
+            value={messageBody}
+            onChange={setMessageBody}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage(e);
+              }
+            }}
+            disabled={!session?.access_token || !activeRoomId}
+            rows={2}
+            token={session?.access_token}
+          />
+          <div className="edit-inline-actions">
+            <label className="secondary-button" style={{ cursor: 'pointer' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              <input
+                type="file"
+                accept={ATTACHMENT_ACCEPT}
+                hidden
+                onChange={handleDraftAttachmentUpload}
                 disabled={!session?.access_token || !activeRoomId}
-                rows={2}
-                token={session?.access_token}
               />
-              <div className="chat-compose-actions">
-                <label className="secondary-button upload-label">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                  </svg>
-                  <input
-                    type="file"
-                    hidden
-                    onChange={handleDraftAttachmentUpload}
-                    disabled={!session?.access_token || !activeRoomId}
-                  />
-                </label>
-                <button
-                  className="action-button"
-                  type="submit"
-                  disabled={!session?.access_token || !activeRoomId}
-                >
-                  Send <span className="kbd-hint">Enter</span>
-                </button>
-              </div>
-            </div>
-            {messageAttachments.length > 0 && (
-              <AttachmentList attachments={messageAttachments} />
-            )}
-          </form>
+            </label>
+            <button
+              className="action-button"
+              type="button"
+              disabled={!session?.access_token || !activeRoomId}
+              onClick={handleSendMessage}
+            >
+              Send <span className="kbd-hint">Enter</span>
+            </button>
+          </div>
+          {messageAttachments.length > 0 && (
+            <AttachmentList attachments={messageAttachments} />
+          )}
         </div>
       </div>
     </section>

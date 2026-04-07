@@ -3,11 +3,13 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useThreadLiveUpdates } from '../hooks/useThreadLiveUpdates';
 import { apiRequest, API_BASE_URL, getHeaders } from '../lib/api';
+import { validateFile, ATTACHMENT_ACCEPT } from '../lib/uploadUtils';
 import { formatTimeAgo } from '../lib/timeUtils';
 import UserIdentity from '../components/UserIdentity';
 import AttachmentList from '../components/AttachmentList';
 import RichText from '../components/RichText';
 import MentionTextarea from '../components/MentionTextarea';
+import LoginPrompt from '../components/LoginPrompt';
 
 const QUICK_EMOJIS = ['\uD83D\uDC4D', '\u2764\uFE0F', '\uD83D\uDE02', '\uD83D\uDE2E', '\uD83D\uDE4F', '\uD83D\uDD25'];
 
@@ -19,6 +21,7 @@ function VoteControls({ entityType, entityId, initialScore, initialUserVote, tok
   const [showVoters, setShowVoters] = useState(false);
   const [voters, setVoters] = useState(null);
   const [votersLoading, setVotersLoading] = useState(false);
+  const [showLoginPrompt, setShowLoginPrompt] = useState(false);
 
   // Sync score when a WS broadcast updates the parent's thread state
   useEffect(() => {
@@ -26,7 +29,10 @@ function VoteControls({ entityType, entityId, initialScore, initialUserVote, tok
   }, [initialScore]);
 
   async function handleVote(value) {
-    if (!token) return;
+    if (!token) {
+      setShowLoginPrompt(true);
+      return;
+    }
     try {
       const result = await apiRequest(`/${entityType}s/${entityId}/vote`, {
         method: 'POST',
@@ -58,9 +64,9 @@ function VoteControls({ entityType, entityId, initialScore, initialUserVote, tok
   }
 
   return (
-    <div className="vote-row">
+    <div className="vote-controls">
       <button
-        className={`vote-btn vote-up ${userVote === 1 ? 'vote-active' : ''}`}
+        className={`vote-btn ${userVote === 1 ? 'upvoted' : ''}`}
         type="button"
         title="Upvote"
         onClick={() => handleVote(1)}
@@ -76,7 +82,7 @@ function VoteControls({ entityType, entityId, initialScore, initialUserVote, tok
         {voteScore}
       </button>
       <button
-        className={`vote-btn vote-down ${userVote === -1 ? 'vote-active' : ''}`}
+        className={`vote-btn ${userVote === -1 ? 'downvoted' : ''}`}
         type="button"
         title="Downvote"
         onClick={() => handleVote(-1)}
@@ -105,6 +111,14 @@ function VoteControls({ entityType, entityId, initialScore, initialUserVote, tok
               ))}
             </ul>
           )}
+        </div>
+      )}
+      {showLoginPrompt && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 15, minWidth: 260 }}>
+          <LoginPrompt
+            message="Log in to vote on posts."
+            onClose={() => setShowLoginPrompt(false)}
+          />
         </div>
       )}
     </div>
@@ -136,7 +150,7 @@ function ReactionsBar({ entityType, entityId, initialReactions, token }) {
   }
 
   return (
-    <div className="reactions-section">
+    <>
       {reactions.length > 0 && (
         <div className="reactions-row">
           {reactions.map((r) => (
@@ -152,7 +166,7 @@ function ReactionsBar({ entityType, entityId, initialReactions, token }) {
         </div>
       )}
       <button
-        className="action-link"
+        className="thread-action-btn"
         type="button"
         title="Add reaction"
         onClick={() => setShowPicker((c) => !c)}
@@ -160,11 +174,11 @@ function ReactionsBar({ entityType, entityId, initialReactions, token }) {
         +&#x263A;
       </button>
       {showPicker && (
-        <div className="emoji-picker">
+        <div className="emoji-picker-row">
           {QUICK_EMOJIS.map((emoji) => (
             <button
               key={emoji}
-              className="emoji-btn"
+              className="emoji-pick-btn"
               type="button"
               onClick={() => handleReaction(emoji)}
             >
@@ -173,7 +187,7 @@ function ReactionsBar({ entityType, entityId, initialReactions, token }) {
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -202,7 +216,7 @@ function ReportButton({ entityType, entityId, token }) {
   return (
     <>
       <button
-        className="action-link action-link-danger"
+        className="thread-action-btn"
         type="button"
         title="Report"
         onClick={() => setShowForm((c) => !c)}
@@ -210,7 +224,7 @@ function ReportButton({ entityType, entityId, token }) {
         &#x26A0; Report
       </button>
       {showForm && (
-        <form className="report-form" onSubmit={handleSubmit}>
+        <form className="report-form-inline" onSubmit={handleSubmit}>
           <input
             className="input"
             placeholder="Reason for report..."
@@ -259,7 +273,7 @@ function EditPostButton({ postId, currentBody, token, onUpdated }) {
     return (
       <div className="edit-inline">
         <textarea
-          className="input textarea"
+          className="input"
           value={body}
           onChange={(e) => setBody(e.target.value)}
           onKeyDown={(e) => {
@@ -272,7 +286,7 @@ function EditPostButton({ postId, currentBody, token, onUpdated }) {
             }
           }}
         />
-        <div className="inline-actions">
+        <div className="edit-inline-actions">
           <button className="action-button" type="button" onClick={handleSave}>
             Save <span className="kbd-hint">Ctrl+Enter</span>
           </button>
@@ -285,7 +299,7 @@ function EditPostButton({ postId, currentBody, token, onUpdated }) {
   }
 
   return (
-    <button className="action-link" type="button" onClick={() => setEditing(true)}>
+    <button className="thread-action-btn" type="button" onClick={() => setEditing(true)}>
       Edit
     </button>
   );
@@ -309,11 +323,11 @@ function DeletePostButton({ postId, token, onDeleted }) {
 
   if (confirming) {
     return (
-      <span className="inline-actions">
+      <span className="edit-inline-actions">
         <button className="action-link action-link-danger" type="button" onClick={handleDelete}>
           Confirm delete
         </button>
-        <button className="action-link" type="button" onClick={() => setConfirming(false)}>
+        <button className="thread-action-btn" type="button" onClick={() => setConfirming(false)}>
           Cancel
         </button>
       </span>
@@ -321,7 +335,7 @@ function DeletePostButton({ postId, token, onDeleted }) {
   }
 
   return (
-    <button className="action-link action-link-danger" type="button" onClick={() => setConfirming(true)}>
+    <button className="thread-action-btn" type="button" onClick={() => setConfirming(true)}>
       Delete
     </button>
   );
@@ -331,15 +345,16 @@ function ThreadReply({ reply, depth = 0, onReplySelect, token, profile, onRefres
   return (
     <div
       id={`post-${reply.id}`}
-      className={`reply-card ${depth > 0 ? 'nested' : ''}`}
-      style={{ marginLeft: depth * 20 }}
+      className="thread-reply"
     >
-      <UserIdentity user={reply.author} compact />
-      <span className="reply-timestamp" title={reply.created_at}>{formatTimeAgo(reply.created_at)}</span>
+      <div className="thread-card-meta">
+        <UserIdentity user={reply.author} compact />
+        <span className="timestamp" title={reply.created_at}>{formatTimeAgo(reply.created_at)}</span>
+      </div>
       <RichText text={reply.body} />
       <AttachmentList attachments={reply.attachments} />
 
-      <div className="reply-actions-row">
+      <div className="thread-card-actions">
         <VoteControls
           entityType="post"
           entityId={reply.id}
@@ -354,7 +369,7 @@ function ThreadReply({ reply, depth = 0, onReplySelect, token, profile, onRefres
           token={token}
         />
         <button
-          className="reply-link"
+          className="thread-action-btn"
           type="button"
           onClick={() => onReplySelect(reply.id)}
         >
@@ -435,8 +450,8 @@ function ThreadPage() {
     const element = document.getElementById(location.hash.slice(1));
     if (element) {
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      element.classList.add('highlight-reply');
-      const timer = setTimeout(() => element.classList.remove('highlight-reply'), 3000);
+      element.classList.add('reply-highlight');
+      const timer = setTimeout(() => element.classList.remove('reply-highlight'), 3000);
       return () => clearTimeout(timer);
     }
   }, [status, location.hash]);
@@ -521,11 +536,19 @@ function ThreadPage() {
       return;
     }
 
+    const file = event.target.files[0];
+    const { valid, error } = validateFile(file);
+    if (!valid) {
+      alert(error);
+      event.target.value = '';
+      return;
+    }
+
     try {
       const formData = new FormData();
       formData.append('linked_entity_type', 'draft');
       formData.append('linked_entity_id', '0');
-      formData.append('file', event.target.files[0]);
+      formData.append('file', file);
 
       const response = await fetch(`${API_BASE_URL}/uploads`, {
         method: 'POST',
@@ -536,10 +559,14 @@ function ThreadPage() {
       if (response.ok) {
         const data = await response.json();
         setReplyAttachments((c) => [...c, data]);
+      } else {
+        const err = await response.json().catch(() => ({}));
+        alert(err.detail || 'Upload failed.');
       }
     } catch {
       /* upload failed — silently ignore */
     }
+    event.target.value = '';
   }
 
   async function handleReplySubmit(event) {
@@ -651,7 +678,7 @@ function ThreadPage() {
                   }}
                 />
                 <textarea
-                  className="input textarea"
+                  className="input"
                   value={editBody}
                   onChange={(e) => setEditBody(e.target.value)}
                   placeholder="Thread body"
@@ -664,7 +691,7 @@ function ThreadPage() {
                     }
                   }}
                 />
-                <div className="inline-actions">
+                <div className="edit-inline-actions">
                   <button className="action-button" type="button" onClick={handleThreadEditSave}>
                     Save <span className="kbd-hint">Ctrl+Enter</span>
                   </button>
@@ -677,7 +704,7 @@ function ThreadPage() {
               <>
                 <h3>{thread.title}</h3>
                 {(thread.is_pinned || thread.is_locked) && (
-                  <div className="inline-actions">
+                  <div className="edit-inline-actions">
                     {thread.is_pinned && <span className="thread-pill">Pinned</span>}
                     {thread.is_locked && (
                       <span className="thread-pill thread-pill-muted">Locked</span>
@@ -699,12 +726,12 @@ function ThreadPage() {
 
             <p className="muted-copy">
               r/{thread.category.slug} &middot; {thread.reply_count} replies &middot;{' '}
-              <span className="thread-meta-time" title={thread.created_at}>{formatTimeAgo(thread.created_at)}</span>
+              <span className="timestamp" title={thread.created_at}>{formatTimeAgo(thread.created_at)}</span>
             </p>
             <UserIdentity user={thread.author} />
 
             {/* Thread-level vote / reactions / report */}
-            <div className="thread-engagement">
+            <div className="thread-card-actions">
               <VoteControls
                 entityType="thread"
                 entityId={thread.id}
@@ -720,7 +747,7 @@ function ThreadPage() {
               />
             </div>
 
-            <div className="inline-actions">
+            <div className="edit-inline-actions">
               <button
                 className="secondary-button"
                 type="button"
@@ -761,61 +788,59 @@ function ThreadPage() {
 
       {/* Inline reply composer — below the thread */}
       <div className="panel stack-gap">
-        <div className="panel-header">
+        <div className="thread-card-meta" style={{ justifyContent: 'space-between' }}>
           <h3>Reply</h3>
           <span className="muted-copy">
             {replyToPostId ? `Replying to #${replyToPostId}` : 'New reply'}
           </span>
         </div>
 
-        <form className="stack-gap" onSubmit={handleReplySubmit}>
-          <MentionTextarea
-            className="input textarea"
-            placeholder={
-              profile
-                ? 'Write a reply. Type @ to mention users, @pulse for AI help. Enter to send, Shift+Enter for new line.'
-                : 'Sign in to reply'
-            }
-            value={replyBody}
-            onChange={setReplyBody}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleReplySubmit(e);
-              }
-            }}
-            disabled={!token}
-            token={token}
-          />
-          <div className="inline-actions">
-            <label className="secondary-button upload-label">
-              Attach file
-              <input
-                type="file"
-                hidden
-                onChange={handleReplyAttachmentUpload}
-                disabled={!token}
-              />
-            </label>
-            <button
-              className="action-button"
-              type="submit"
-              disabled={!token}
-            >
-              Post reply <span className="kbd-hint">Enter</span>
-            </button>
-            {replyToPostId && (
+        {!token ? (
+          <LoginPrompt message="Log in to join the conversation and post replies." />
+        ) : (
+          <form className="stack-gap" onSubmit={handleReplySubmit}>
+            <MentionTextarea
+              className="input"
+              placeholder="Write a reply. Type @ to mention users, @pulse for AI help. Enter to send, Shift+Enter for new line."
+              value={replyBody}
+              onChange={setReplyBody}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleReplySubmit(e);
+                }
+              }}
+              token={token}
+            />
+            <div className="edit-inline-actions">
+              <label className="secondary-button" style={{ cursor: 'pointer' }}>
+                Attach file
+                <input
+                  type="file"
+                  accept={ATTACHMENT_ACCEPT}
+                  hidden
+                  onChange={handleReplyAttachmentUpload}
+                />
+              </label>
               <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setReplyToPostId(null)}
+                className="action-button"
+                type="submit"
               >
-                Cancel
+                Post reply <span className="kbd-hint">Enter</span>
               </button>
-            )}
-          </div>
-          <AttachmentList attachments={replyAttachments} />
-        </form>
+              {replyToPostId && (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => setReplyToPostId(null)}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+            <AttachmentList attachments={replyAttachments} />
+          </form>
+        )}
       </div>
     </section>
   );

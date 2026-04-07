@@ -22,7 +22,6 @@ function AttachmentList({ attachments = [] }) {
           >
             {isImage ? (
               <img
-                className="attachment-preview"
                 src={url}
                 alt={attachment.file_name}
               />

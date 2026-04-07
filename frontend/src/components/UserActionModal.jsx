@@ -116,17 +116,17 @@ function UserActionModal({ user, isOpen, onClose, onRefresh }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <div className="panel-header">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
           <h3>@{activeUser.username}</h3>
-          <button className="reply-link" type="button" onClick={onClose}>
+          <button className="secondary-button" type="button" onClick={onClose}>
             Close
           </button>
         </div>
 
-        <div className="user-modal-header">
+        <div style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
           {avatarSrc ? (
             <img
-              className="avatar-preview"
+              className="profile-avatar-preview"
               src={avatarSrc}
               alt={activeUser.username}
             />
@@ -153,7 +153,7 @@ function UserActionModal({ user, isOpen, onClose, onRefresh }) {
         </div>
 
         {!isSelf && (
-          <div className="inline-actions">
+          <div className="edit-inline-actions">
             <button
               className="action-button"
               type="button"

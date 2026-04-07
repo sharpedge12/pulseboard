@@ -151,7 +151,7 @@ function getTypeColorClass(type) {
   if (type === 'user_report') return 'notif-icon-report';
   if (type === 'moderation_action') return 'notif-icon-warning';
   if (type === 'mention') return 'notif-icon-mention';
-  return 'notif-icon-default';
+  return '';
 }
 
 function NotificationCenter({
@@ -182,22 +182,22 @@ function NotificationCenter({
 
       <aside className="notification-drawer">
         <div className="drawer-header">
-          <div className="drawer-header-left">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
             <h3>Notifications</h3>
             {unreadCount > 0 && (
               <span className="notif-badge">{unreadCount}</span>
             )}
           </div>
-          <div className="drawer-actions">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
             <button
-              className="notif-filter-pill"
+              className="pill"
               type="button"
               onClick={() => setShowAll((c) => !c)}
             >
               {showAll ? 'Unread' : 'All'}
             </button>
             {unreadCount > 0 && (
-              <button className="notif-mark-read-btn" type="button" onClick={markAllRead}>
+              <button className="action-link" type="button" onClick={markAllRead}>
                 Mark all read
               </button>
             )}
@@ -209,14 +209,12 @@ function NotificationCenter({
 
         <div className="drawer-body">
           {visibleNotifications.length === 0 && (
-            <div className="notif-empty-state">
-              <div className="notif-empty-icon">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-              </div>
-              <p className="notif-empty-title">
+            <div className="notif-empty">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+              <p>
                 {showAll ? 'No notifications yet' : 'All caught up!'}
               </p>
               <p className="muted-copy">
@@ -230,7 +228,7 @@ function NotificationCenter({
             <button
               key={`${notification.id}-${notification.count}`}
               className={`notif-card ${
-                notification.is_read ? 'notif-card-read' : 'notif-card-unread'
+                notification.is_read ? '' : 'unread'
               }`}
               type="button"
               onClick={async () => {
@@ -239,21 +237,21 @@ function NotificationCenter({
                 onClose();
               }}
             >
-              <div className={`notif-card-icon ${getTypeColorClass(notification.notification_type)}`}>
+              <div className={`notif-icon ${getTypeColorClass(notification.notification_type)}`}>
                 <NotificationTypeIcon type={notification.notification_type} />
               </div>
-              <div className="notif-card-content">
-                <span className="notif-card-title">{buildMergedTitle(notification)}</span>
-                <div className="notif-card-meta">
-                  <span className="notif-card-type">
+              <div className="notif-body">
+                <span className="notif-title">{buildMergedTitle(notification)}</span>
+                <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+                  <span className="notif-type">
                     {notification.notification_type.replace(/_/g, ' ')}
                   </span>
-                  <span className="notif-card-time">
+                  <span className="notif-time">
                     {formatTimeAgo(notification.created_at)}
                   </span>
                 </div>
               </div>
-              {!notification.is_read && <span className="notif-card-dot" />}
+              {!notification.is_read && <span className="notif-dot" />}
             </button>
           ))}
         </div>

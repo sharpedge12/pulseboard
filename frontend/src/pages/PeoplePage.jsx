@@ -48,14 +48,12 @@ function PeoplePage() {
   return (
     <section className="page-grid feed-layout">
       <div className="panel stack-gap">
-        <div className="panel-header">
-          <h3>Find People</h3>
-          <span className="muted-copy">Search by username</span>
-        </div>
+        <h3>Find People</h3>
+        <span className="muted-copy">Search by username</span>
 
         <form className="people-search-form" onSubmit={handleSearch}>
           <input
-            className="input people-search-input"
+            className="input"
             type="text"
             placeholder="Search usernames..."
             value={query}
@@ -74,14 +72,12 @@ function PeoplePage() {
         {error && <p className="error-copy">{error}</p>}
 
         {searched && results.length === 0 && !loading && (
-          <div className="people-empty-state">
-            <p className="muted-copy">
-              No users found matching "{query}".
-            </p>
-          </div>
+          <p className="muted-copy">
+            No users found matching "{query}".
+          </p>
         )}
 
-        <div className="people-results">
+        <div className="people-grid">
           {results.map((user) => (
             <button
               key={user.id}
@@ -89,39 +85,38 @@ function PeoplePage() {
               type="button"
               onClick={() => setSelectedUser(user)}
             >
-              <div className="people-card-avatar">
-                {user.avatar_url ? (
-                  <img
-                    src={
-                      user.avatar_url.startsWith('http')
-                        ? user.avatar_url
-                        : assetUrl(user.avatar_url)
-                    }
-                    alt={user.username}
-                    className="people-card-img"
-                  />
-                ) : (
-                  <span className="people-card-initial">
-                    {user.username.charAt(0).toUpperCase()}
-                  </span>
-                )}
+              <div className="people-card-header">
+                <div className="people-card-avatar">
+                  {user.avatar_url ? (
+                    <img
+                      src={
+                        user.avatar_url.startsWith('http')
+                          ? user.avatar_url
+                          : assetUrl(user.avatar_url)
+                      }
+                      alt={user.username}
+                    />
+                  ) : (
+                    user.username.charAt(0).toUpperCase()
+                  )}
+                </div>
+                <div className="people-card-info">
+                  <span className="people-card-name">{user.username}</span>
+                  <span className="people-card-role">{user.role}</span>
+                </div>
               </div>
-              <div className="people-card-info">
-                <span className="people-card-name">{user.username}</span>
-                <span className="people-card-role">{user.role}</span>
-                {user.bio && (
-                  <span className="people-card-bio">{user.bio}</span>
-                )}
-                <span className={`people-card-status-text ${isUserOnline(user.last_seen) ? 'people-card-online' : ''}`}>
+              {user.bio && (
+                <span className="people-card-bio">{user.bio}</span>
+              )}
+              <div className="people-card-footer">
+                <span className={`people-status ${isUserOnline(user.last_seen) ? 'people-online' : ''}`}>
                   {formatLastSeen(user.last_seen)}
                 </span>
-              </div>
-              <div className="people-card-status">
                 {user.friendship_status === 'accepted' && (
-                  <span className="people-badge people-badge-friend">Friend</span>
+                  <span className="friendship-badge">Friend</span>
                 )}
                 {user.friendship_status === 'pending' && (
-                  <span className="people-badge people-badge-pending">Pending</span>
+                  <span className="friendship-badge" style={{ background: 'var(--color-warning-muted)', color: 'var(--color-warning)' }}>Pending</span>
                 )}
               </div>
             </button>

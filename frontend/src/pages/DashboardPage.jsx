@@ -79,10 +79,8 @@ function DashboardPage() {
   return (
     <section className="page-grid feed-layout">
       <div className="panel stack-gap">
-        <div className="panel-header">
-          <h3>Dashboard</h3>
-          <span className="muted-copy">Welcome back, {profile.username}</span>
-        </div>
+        <h3>Dashboard</h3>
+        <span className="muted-copy">Welcome back, {profile.username}</span>
 
         {loading && <p className="muted-copy">Loading dashboard...</p>}
 
@@ -113,7 +111,7 @@ function DashboardPage() {
             </div>
 
             {/* Quick actions */}
-            <div className="dashboard-actions">
+            <div className="quick-actions">
               <button
                 className="action-button"
                 type="button"
@@ -146,18 +144,18 @@ function DashboardPage() {
 
             {/* Recent unread notifications */}
             {notifications && notifications.items && notifications.items.length > 0 && (
-              <div className="dashboard-section">
-                <h4>Recent Notifications</h4>
-                <div className="dashboard-notif-list">
+              <div className="dash-section">
+                <h3>Recent Notifications</h3>
+                <div className="stack-gap">
                   {notifications.items.slice(0, 5).map((notif) => (
                     <div
                       key={notif.id}
-                      className={`dashboard-notif-item ${notif.is_read ? '' : 'dashboard-notif-unread'}`}
+                      className={`dash-notif-item ${notif.is_read ? '' : 'unread'}`}
                     >
-                      <span className="dashboard-notif-title">{notif.title}</span>
-                      <div className="dashboard-notif-meta">
-                        <span className="dashboard-notif-type">{notif.notification_type.replace(/_/g, ' ')}</span>
-                        <span className="dashboard-notif-time">{formatTimeAgo(notif.created_at)}</span>
+                      <span className="dash-notif-title">{notif.title}</span>
+                      <div className="edit-inline-actions">
+                        <span className="dash-notif-type">{notif.notification_type.replace(/_/g, ' ')}</span>
+                        <span className="dash-notif-time">{formatTimeAgo(notif.created_at)}</span>
                       </div>
                     </div>
                   ))}
@@ -167,20 +165,22 @@ function DashboardPage() {
 
             {/* Recent threads */}
             {recentThreads.length > 0 && (
-              <div className="dashboard-section">
-                <h4>Latest Threads</h4>
-                <div className="dashboard-thread-list">
+              <div className="dash-section">
+                <h3>Latest Threads</h3>
+                <div className="stack-gap">
                   {recentThreads.map((thread) => (
                     <button
                       key={thread.id}
-                      className="dashboard-thread-item"
+                      className="dash-thread-item"
                       type="button"
                       onClick={() => navigate(`/threads/${thread.id}`)}
                     >
-                      <span className="dashboard-thread-title">{thread.title}</span>
-                      <span className="dashboard-thread-meta">
-                        r/{thread.category.slug} &middot; {thread.reply_count} replies &middot; {thread.vote_score} votes &middot; {formatTimeAgo(thread.created_at)}
-                      </span>
+                      <div>
+                        <span className="dash-thread-title">{thread.title}</span>
+                        <span className="dash-thread-meta">
+                          r/{thread.category.slug} &middot; {thread.reply_count} replies &middot; {thread.vote_score} votes &middot; {formatTimeAgo(thread.created_at)}
+                        </span>
+                      </div>
                     </button>
                   ))}
                 </div>
@@ -196,13 +196,13 @@ function DashboardPage() {
 
             {/* Friends list preview */}
             {friendData && friendData.friends && friendData.friends.length > 0 && (
-              <div className="dashboard-section">
-                <h4>Friends</h4>
-                <div className="dashboard-friends-row">
+              <div className="dash-section">
+                <h3>Friends</h3>
+                <div className="friend-chips">
                   {friendData.friends.slice(0, 8).map((friend) => (
                     <button
                       key={friend.id}
-                      className="dashboard-friend-chip"
+                      className="friend-chip"
                       type="button"
                       onClick={() => navigate(`/profile/${friend.id}`)}
                       title={friend.username}
@@ -215,14 +215,14 @@ function DashboardPage() {
                               : assetUrl(friend.avatar_url)
                           }
                           alt={friend.username}
-                          className="dashboard-friend-avatar"
+                          className="friend-chip-avatar"
                         />
                       ) : (
-                        <span className="dashboard-friend-initial">
+                        <span className="friend-chip-avatar">
                           {friend.username.charAt(0).toUpperCase()}
                         </span>
                       )}
-                      <span className="dashboard-friend-name">{friend.username}</span>
+                      <span className="friend-chip-name">{friend.username}</span>
                     </button>
                   ))}
                 </div>

@@ -142,7 +142,7 @@ function MentionTextarea({ value, onChange, token, placeholder, disabled, classN
   }, []);
 
   return (
-    <div className="mention-textarea-wrapper">
+    <div className="mention-wrapper">
       <textarea
         ref={textareaRef}
         className={className || 'input textarea'}
@@ -158,7 +158,7 @@ function MentionTextarea({ value, onChange, token, placeholder, disabled, classN
           {suggestions.map((user, idx) => (
             <button
               key={user.id}
-              className={`mention-dropdown-item ${idx === selectedIndex ? 'mention-dropdown-item-active' : ''}`}
+              className={`mention-item ${idx === selectedIndex ? 'active' : ''}`}
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault();
@@ -166,8 +166,10 @@ function MentionTextarea({ value, onChange, token, placeholder, disabled, classN
               }}
               onMouseEnter={() => setSelectedIndex(idx)}
             >
-              <div className="mention-dropdown-avatar">
-                {user.avatar_url ? (
+              <div className="mention-avatar">
+                {user.username === 'pulse' ? (
+                  <img src="/pulse-avatar.svg" alt="pulse" />
+                ) : user.avatar_url ? (
                   <img
                     src={
                       user.avatar_url.startsWith('http')
@@ -180,10 +182,8 @@ function MentionTextarea({ value, onChange, token, placeholder, disabled, classN
                   <span>{user.username.charAt(0).toUpperCase()}</span>
                 )}
               </div>
-              <div className="mention-dropdown-info">
-                <span className="mention-dropdown-username">@{user.username}</span>
-                <span className="mention-dropdown-role">{user.role}</span>
-              </div>
+              <span className="mention-username">@{user.username}</span>
+              <span className="mention-role">{user.role}</span>
             </button>
           ))}
         </div>

@@ -82,9 +82,7 @@ function LoginPage() {
   return (
     <section className="page-grid auth-centered">
       <div className="panel stack-gap">
-        <div className="panel-header">
-          <h3>{mode === 'login' ? 'Sign in' : 'Create account'}</h3>
-        </div>
+        <h3>{mode === 'login' ? 'Sign in' : 'Create account'}</h3>
 
         <div className="pill-row">
           <button

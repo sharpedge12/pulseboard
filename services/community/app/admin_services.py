@@ -446,6 +446,20 @@ def _resolve_report_content(
                 post.thread.category.id,
                 post.thread.title,
             )
+    elif report.entity_type == "user":
+        user = db.execute(
+            select(User).where(User.id == report.entity_id)
+        ).scalar_one_or_none()
+        if user:
+            snippet = f"User profile: @{user.username}"
+            return (
+                snippet,
+                user.username,
+                user.id,
+                "",
+                0,
+                "",
+            )
     return ("", "[deleted]", 0, "", 0, "")
 
 
@@ -474,7 +488,9 @@ def list_reports(
         )
 
         if category_ids is not None and cat_id not in category_ids:
-            continue
+            # User reports (cat_id=0) are visible to all staff
+            if report.entity_type != "user":
+                continue
 
         reporter = db.execute(
             select(User).where(User.id == report.reporter_id)

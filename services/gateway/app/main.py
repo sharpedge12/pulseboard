@@ -12,13 +12,11 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import Response
 
 from shared.core.config import settings
 from shared.core.logging import configure_logging
@@ -210,15 +208,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve uploads directory (shared volume in Docker)
-upload_root = Path(settings.upload_dir)
-upload_root.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=str(upload_root)), name="uploads")
+from shared.core.security_headers import SecurityHeadersMiddleware  # noqa: E402
+from shared.core.rate_limit import RateLimitMiddleware  # noqa: E402
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(
+    RateLimitMiddleware,
+    rate_limit=20,
+    window_seconds=60,
+    paths=["/api/v1/auth/"],
+)
+
+# Proxy uploaded assets (avatars, attachments) to the Core service,
+# which serves them via its own StaticFiles mount.  This avoids
+# filesystem-sync issues between Docker bind-mounts on Windows/WSL2.
 
 
 @app.get("/health", tags=["health"])
 def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "gateway"}
+
+
+# ---------------------------------------------------------------------------
+# Static asset proxy — forward /uploads/* to the Core service
+# ---------------------------------------------------------------------------
+
+
+@app.get("/uploads/{file_path:path}")
+async def proxy_uploads(file_path: str) -> Response:
+    """Proxy uploaded file requests to the Core service."""
+    backend_url = f"{settings.core_service_url}/uploads/{file_path}"
+    assert _http_client is not None, "HTTP client not initialised"
+    try:
+        response = await _http_client.get(backend_url)
+    except httpx.ConnectError:
+        return Response(
+            content='{"detail":"Service unavailable"}',
+            status_code=503,
+            media_type="application/json",
+        )
+    excluded_headers = {"content-encoding", "transfer-encoding", "content-length"}
+    response_headers = {
+        k: v for k, v in response.headers.items() if k.lower() not in excluded_headers
+    }
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        headers=response_headers,
+        media_type=response.headers.get("content-type"),
+    )
 
 
 # ---------------------------------------------------------------------------

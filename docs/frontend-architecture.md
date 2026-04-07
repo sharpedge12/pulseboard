@@ -93,17 +93,22 @@ graph TD
     UI["UserIdentity"]
     UAM["UserActionModal"]
     PR["ProtectedRoute"]
+    LP["LoginPrompt"]
+    PG["Pagination"]
 
     ML --> NC
     HP --> TC
     HP --> AL
     HP --> MT
+    HP --> PG
     TC --> UI
     TC --> AL
+    TC --> LP
     TP --> UI
     TP --> AL
     TP --> RT
     TP --> MT
+    TP --> LP
     CP --> UI
     CP --> AL
     CP --> RT
@@ -111,6 +116,7 @@ graph TD
     PP --> UAM
     UI --> UAM
     AP --> UI
+    AP --> PG
     PrP --> UI
 ```
 
@@ -121,14 +127,16 @@ graph TD
 | Component | Purpose | Used By |
 |-----------|---------|---------|
 | `ProtectedRoute` | Route guard; redirects to `/login` if unauthenticated; supports `requiredRole="staff"` | App.jsx |
-| `MainLayout` | App shell with sidebar nav, top bar, notification bell, theme toggle | All pages |
-| `ThreadCard` | Thread summary card with votes, reactions, tags, report | HomePage |
+| `MainLayout` | App shell with top navbar, horizontal nav row, notification bell, theme toggle | All pages |
+| `ThreadCard` | Thread summary card with votes, reactions, tags, report, login prompt for guests | HomePage |
 | `MentionTextarea` | Textarea with `@mention` autocomplete (debounced user search) | HomePage, ThreadPage, ChatPage |
 | `NotificationCenter` | Slide-out notification drawer with merge, filter, type icons | MainLayout |
 | `RichText` | Renders text with clickable `@username` links | ThreadPage, ChatPage |
 | `AttachmentList` | Renders file attachments (image previews, download links) | HomePage, ThreadPage, ChatPage, ThreadCard |
 | `UserActionModal` | Modal with message/friend/report actions for a user | PeoplePage, UserIdentity |
-| `UserIdentity` | User display (avatar, username, role) with click-to-open modal | ThreadPage, ChatPage, ProfilePage, AdminPage, ThreadCard |
+| `UserIdentity` | User display (avatar, username, role) with click-to-open modal; auto-assigns Pulse bot avatar | ThreadPage, ChatPage, ProfilePage, AdminPage, ThreadCard |
+| `LoginPrompt` | Inline banner prompting unauthenticated users to log in for protected actions | ThreadCard, ThreadPage |
+| `Pagination` | Numbered page buttons with ellipsis, Prev/Next, total count | HomePage, AdminPage |
 
 ---
 
@@ -197,7 +205,10 @@ All pages call `apiRequest()` inline — there are no named API functions (e.g.,
 
 ## Styling
 
-- Single global stylesheet: `styles/global.css`
+- Single global stylesheet: `styles/global.css` (~3,270 lines)
+- Reddit-inspired design: `#FF4500` orange-red accent, `#030303` dark background, `#1a1a1b` card background
 - CSS custom properties for theming via `[data-theme="dark"]` / `[data-theme="light"]`
-- Google Fonts loaded in `index.html`: **Manrope** (body) + **Space Grotesk** (headings)
+- System fonts (`-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto`) — no Google Fonts
 - No CSS modules, no Tailwind, no styled-components
+- Custom SVG logo (`public/logo.svg`) — shield with pulse line, used as navbar brand and favicon
+- Pulse bot avatar (`public/pulse-avatar.svg`) — orange robot head, auto-assigned for `pulse` username

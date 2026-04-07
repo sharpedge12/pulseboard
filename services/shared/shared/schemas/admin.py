@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+from shared.services.sanitize import sanitize_text
 
 
 class AdminUserResponse(BaseModel):
@@ -41,7 +43,7 @@ class AdminSummaryResponse(BaseModel):
 
 
 class RoleUpdateRequest(BaseModel):
-    role: str
+    role: str = Field(pattern=r"^(admin|moderator|member)$")
 
 
 class ModerationActionResponse(BaseModel):
@@ -69,14 +71,19 @@ class AdminReportResponse(BaseModel):
 
 
 class ReportResolveRequest(BaseModel):
-    status: str  # 'resolved' or 'dismissed'
+    status: str = Field(pattern=r"^(resolved|dismissed)$")
 
 
 class ModerationActionRequest(BaseModel):
-    action_type: str  # 'warn', 'suspend', 'ban'
-    reason: str
-    duration_hours: int | None = None
+    action_type: str = Field(pattern=r"^(warn|suspend|ban)$")
+    reason: str = Field(min_length=3, max_length=2000)
+    duration_hours: int | None = Field(default=None, ge=1, le=8760)
     report_id: int | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def clean_reason(cls, v: str) -> str:
+        return sanitize_text(v)
 
 
 class ModerationActionDetailResponse(BaseModel):
@@ -91,14 +98,24 @@ class ModerationActionDetailResponse(BaseModel):
 
 
 class CategoryModeratorRequest(BaseModel):
-    user_id: int
-    category_id: int
+    user_id: int = Field(ge=1)
+    category_id: int = Field(ge=1)
 
 
 class CategoryRequestCreate(BaseModel):
-    title: str
-    slug: str
-    description: str = ""
+    title: str = Field(min_length=3, max_length=120)
+    slug: str = Field(min_length=3, max_length=120, pattern=r"^[a-z0-9-]+$")
+    description: str = Field(default="", max_length=500)
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, v: str) -> str:
+        return sanitize_text(v)
+
+    @field_validator("description")
+    @classmethod
+    def clean_description(cls, v: str) -> str:
+        return sanitize_text(v)
 
 
 class CategoryRequestResponse(BaseModel):
@@ -116,7 +133,7 @@ class CategoryRequestResponse(BaseModel):
 
 
 class CategoryRequestReviewRequest(BaseModel):
-    status: str  # 'approved' or 'rejected'
+    status: str = Field(pattern=r"^(approved|rejected)$")
 
 
 # ---------------------------------------------------------------------------

@@ -285,7 +285,11 @@ def create_chat_message(
         if recipient_id not in recipient_ids:
             recipient_ids.append(recipient_id)
 
-    if should_invoke_bot(body):
+    _invoke_bot = should_invoke_bot(body)
+
+    db.commit()
+
+    if _invoke_bot:
         # Bot reply is generated asynchronously in a background thread.
         # The user's message is committed immediately; the bot reply will
         # appear via WebSocket once ready.
@@ -295,8 +299,6 @@ def create_chat_message(
             user_message=body,
             poster_user_id=current_user.id,
         )
-
-    db.commit()
     created_message = db.execute(
         select(Message)
         .where(Message.id == message.id)

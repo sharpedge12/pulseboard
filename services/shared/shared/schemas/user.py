@@ -1,11 +1,29 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from shared.services.sanitize import sanitize_text, sanitize_username
 
 
 class UserUpdateRequest(BaseModel):
-    username: str | None = Field(default=None, min_length=3, max_length=50)
+    username: str | None = Field(
+        default=None, min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_]+$"
+    )
     bio: str | None = Field(default=None, max_length=500)
+
+    @field_validator("username")
+    @classmethod
+    def clean_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return sanitize_username(v)
+
+    @field_validator("bio")
+    @classmethod
+    def clean_bio(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return sanitize_text(v)
 
 
 class UserMeResponse(BaseModel):
@@ -54,6 +72,11 @@ class UserPublicProfileResponse(BaseModel):
 
 class UserReportRequest(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def clean_reason(cls, v: str) -> str:
+        return sanitize_text(v)
 
 
 class UserActionResponse(BaseModel):

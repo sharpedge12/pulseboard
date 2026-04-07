@@ -10,7 +10,7 @@ can record audit entries.  The query helpers enforce role-based visibility:
 import json
 import logging
 import math
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session

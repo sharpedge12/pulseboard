@@ -1,19 +1,30 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from shared.schemas.upload import AttachmentResponse
 from shared.schemas.vote import ReactionCountResponse
+from shared.services.sanitize import sanitize_text
 
 
 class PostCreateRequest(BaseModel):
     body: str = Field(min_length=1, max_length=5000)
     parent_post_id: int | None = None
-    attachment_ids: list[int] = Field(default_factory=list)
+    attachment_ids: list[int] = Field(default_factory=list, max_length=20)
+
+    @field_validator("body")
+    @classmethod
+    def clean_body(cls, v: str) -> str:
+        return sanitize_text(v)
 
 
 class PostUpdateRequest(BaseModel):
     body: str = Field(min_length=1, max_length=5000)
+
+    @field_validator("body")
+    @classmethod
+    def clean_body(cls, v: str) -> str:
+        return sanitize_text(v)
 
 
 class PostAuthorResponse(BaseModel):

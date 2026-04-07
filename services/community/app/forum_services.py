@@ -427,6 +427,7 @@ def create_thread(
         thread.id,
     )
     db.add(ThreadSubscription(thread_id=thread.id, user_id=current_user.id))
+
     audit_record(
         db,
         actor_id=current_user.id,
@@ -436,6 +437,19 @@ def create_thread(
         details={"title": payload.title, "category_id": payload.category_id},
     )
     db.commit()
+
+    # Trigger @pulse bot reply if mentioned in thread body (after commit so
+    # the background thread can read the committed data).
+    if payload.body and should_invoke_bot(payload.body):
+        schedule_forum_bot_reply(
+            thread_id=thread.id,
+            thread_title=payload.title,
+            thread_body=payload.body,
+            parent_post_id=None,
+            user_message=payload.body,
+            poster_user_id=current_user.id,
+        )
+
     return get_thread_detail(db, thread.id)
 
 
@@ -503,6 +517,7 @@ def update_thread(
             title=f"{current_user.username} edited your thread",
             payload={"thread_id": thread.id},
         )
+        db.commit()
 
     return get_thread_detail(db, thread.id)
 
@@ -552,18 +567,7 @@ def create_post(
         "post",
         post.id,
     )
-    if should_invoke_bot(body):
-        # Bot reply is generated asynchronously in a background thread.
-        # The user's post is committed immediately; the bot reply will
-        # appear via WebSocket once ready.
-        schedule_forum_bot_reply(
-            thread_id=thread_id,
-            thread_title=thread.title,
-            thread_body=thread.body,
-            parent_post_id=post.id,
-            user_message=body,
-            poster_user_id=current_user.id,
-        )
+    _invoke_bot_for_post = should_invoke_bot(body)
     audit_record(
         db,
         actor_id=current_user.id,
@@ -634,6 +638,17 @@ def create_post(
             )
 
     db.commit()
+
+    if _invoke_bot_for_post:
+        schedule_forum_bot_reply(
+            thread_id=thread_id,
+            thread_title=thread.title,
+            thread_body=thread.body or "",
+            parent_post_id=post.id,
+            user_message=body,
+            poster_user_id=current_user.id,
+        )
+
     return PostResponse(
         id=created_post.id,
         thread_id=created_post.thread_id,
@@ -717,6 +732,7 @@ def update_post(
             title=f"{current_user.username} edited your post",
             payload={"thread_id": post.thread_id, "post_id": post.id},
         )
+        db.commit()
 
     return PostResponse(
         id=post.id,

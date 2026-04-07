@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 from shared.core.database import get_db
 from shared.core.auth_helpers import get_current_user
 from shared.models.user import User, UserRole
+from shared.models.vote import ContentReport
+from shared.services import audit as audit_service
 from shared.schemas.user import (
     FriendRequestListResponse,
     UserActionResponse,
@@ -169,6 +171,44 @@ def report_user(
             detail="You cannot report yourself.",
         )
 
+    # Check for duplicate report
+    existing = db.execute(
+        select(ContentReport).where(
+            ContentReport.reporter_id == current_user.id,
+            ContentReport.entity_type == "user",
+            ContentReport.entity_id == reported_user.id,
+        )
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You have already reported this user.",
+        )
+
+    # Create a ContentReport so it appears in the admin Reports panel
+    report = ContentReport(
+        reporter_id=current_user.id,
+        entity_type="user",
+        entity_id=reported_user.id,
+        reason=payload.reason,
+    )
+    db.add(report)
+    db.flush()
+
+    audit_service.record(
+        db,
+        actor_id=current_user.id,
+        action=audit_service.REPORT_CREATE,
+        entity_type="report",
+        entity_id=report.id,
+        details={
+            "entity_type": "user",
+            "entity_id": reported_user.id,
+            "reason": payload.reason,
+        },
+    )
+
+    # Notify staff
     staff_users = (
         db.execute(
             select(User).where(User.role.in_([UserRole.ADMIN, UserRole.MODERATOR]))

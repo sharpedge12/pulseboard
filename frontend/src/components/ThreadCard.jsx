@@ -5,6 +5,7 @@ import { apiRequest, getHeaders } from '../lib/api';
 import { formatTimeAgo } from '../lib/timeUtils';
 import UserIdentity from './UserIdentity';
 import AttachmentList from './AttachmentList';
+import LoginPrompt from './LoginPrompt';
 
 const QUICK_EMOJIS = ['\uD83D\uDC4D', '\u2764\uFE0F', '\uD83D\uDE02', '\uD83D\uDE2E', '\uD83D\uDE4F', '\uD83D\uDD25'];
 
@@ -18,10 +19,14 @@ function ThreadCard({ thread }) {
   const [showReportForm, setShowReportForm] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportMessage, setReportMessage] = useState('');
+  const [showLoginPrompt, setShowLoginPrompt] = useState(false);
 
   async function handleVote(event, value) {
     event.stopPropagation();
-    if (!session?.access_token) return;
+    if (!session?.access_token) {
+      setShowLoginPrompt(true);
+      return;
+    }
 
     try {
       const result = await apiRequest(`/threads/${thread.id}/vote`, {
@@ -38,7 +43,10 @@ function ThreadCard({ thread }) {
 
   async function handleReaction(event, emoji) {
     event.stopPropagation();
-    if (!session?.access_token) return;
+    if (!session?.access_token) {
+      setShowLoginPrompt(true);
+      return;
+    }
 
     try {
       const counts = await apiRequest(`/threads/${thread.id}/react`, {
@@ -87,16 +95,16 @@ function ThreadCard({ thread }) {
       {/* Vote column */}
       <div className="vote-column" onClick={(e) => e.stopPropagation()}>
         <button
-          className={`vote-btn vote-up ${userVote === 1 ? 'vote-active' : ''}`}
+          className={`vote-btn ${userVote === 1 ? 'upvoted' : ''}`}
           type="button"
           title="Upvote"
           onClick={(e) => handleVote(e, 1)}
         >
           &#x25B2;
         </button>
-        <span className="vote-score">{voteScore}</span>
+        <span className={`vote-score ${voteScore > 0 ? 'positive' : voteScore < 0 ? 'negative' : ''}`}>{voteScore}</span>
         <button
-          className={`vote-btn vote-down ${userVote === -1 ? 'vote-active' : ''}`}
+          className={`vote-btn ${userVote === -1 ? 'downvoted' : ''}`}
           type="button"
           title="Downvote"
           onClick={(e) => handleVote(e, -1)}
@@ -108,15 +116,15 @@ function ThreadCard({ thread }) {
       {/* Main content */}
       <div className="thread-card-body">
         <div>
-          <p className="thread-category">r/{thread.category.slug}</p>
-          <div className="thread-title-row">
-            <strong>{thread.title}</strong>
+          <p className="thread-card-community">r/{thread.category.slug}</p>
+          <div className="thread-card-title">
+            {thread.title}
             {thread.is_pinned && <span className="thread-pill">Pinned</span>}
             {thread.is_locked && (
               <span className="thread-pill thread-pill-muted">Locked</span>
             )}
           </div>
-          <p className="muted-copy">{thread.body.slice(0, 140)}</p>
+          <p className="thread-card-preview">{thread.body.slice(0, 140)}</p>
           <AttachmentList attachments={thread.attachments} />
           {thread.tags && thread.tags.length > 0 && (
             <div className="pill-row" onClick={(e) => e.stopPropagation()}>
@@ -145,15 +153,15 @@ function ThreadCard({ thread }) {
           </div>
         )}
 
-        <div className="thread-meta">
+        <div className="thread-card-meta">
           <UserIdentity user={thread.author} compact />
-          <span className="thread-meta-time" title={thread.created_at}>{formatTimeAgo(thread.created_at)}</span>
+          <span className="timestamp" title={thread.created_at}>{formatTimeAgo(thread.created_at)}</span>
           <span>{thread.reply_count} replies</span>
 
           {/* Action buttons */}
-          <div className="thread-actions" onClick={(e) => e.stopPropagation()}>
+          <div className="thread-card-actions" onClick={(e) => e.stopPropagation()}>
             <button
-              className="action-link"
+              className="thread-action-btn"
               type="button"
               title="Add reaction"
               onClick={(e) => { e.stopPropagation(); setShowEmojiPicker((c) => !c); }}
@@ -162,7 +170,7 @@ function ThreadCard({ thread }) {
             </button>
             {session?.access_token && (
               <button
-                className="action-link action-link-danger"
+                className="thread-action-btn"
                 type="button"
                 title="Report"
                 onClick={(e) => { e.stopPropagation(); setShowReportForm((c) => !c); }}
@@ -175,11 +183,11 @@ function ThreadCard({ thread }) {
 
         {/* Emoji picker dropdown */}
         {showEmojiPicker && (
-          <div className="emoji-picker" onClick={(e) => e.stopPropagation()}>
+          <div className="emoji-picker-row" onClick={(e) => e.stopPropagation()}>
             {QUICK_EMOJIS.map((emoji) => (
               <button
                 key={emoji}
-                className="emoji-btn"
+                className="emoji-pick-btn"
                 type="button"
                 onClick={(e) => handleReaction(e, emoji)}
               >
@@ -192,7 +200,7 @@ function ThreadCard({ thread }) {
         {/* Report form */}
         {showReportForm && (
           <form
-            className="report-form"
+            className="report-form-inline"
             onClick={(e) => e.stopPropagation()}
             onSubmit={handleReport}
           >
@@ -208,6 +216,15 @@ function ThreadCard({ thread }) {
           </form>
         )}
         {reportMessage && <p className="muted-copy">{reportMessage}</p>}
+
+        {showLoginPrompt && (
+          <div onClick={(e) => e.stopPropagation()}>
+            <LoginPrompt
+              message="Log in to vote, react, and join the discussion."
+              onClose={() => setShowLoginPrompt(false)}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

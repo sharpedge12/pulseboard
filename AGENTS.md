@@ -33,7 +33,7 @@ pip install -r services/<service>/requirements.txt   # for each service
 
 ```bash
 source .venv/bin/activate
-timeout 300 python -m pytest services/tests/test_auth.py services/tests/test_forum.py services/tests/test_audit.py -x -v --tb=short -k "not subscribe"
+timeout 600 python -m pytest services/tests/test_auth.py services/tests/test_forum.py services/tests/test_audit.py services/tests/test_validation.py -x -v --tb=short -k "not subscribe"
 rm -f test_services.db    # clean up after test run
 ```
 
@@ -136,7 +136,7 @@ docker compose up --build
 
 | Service | Port | Responsibility |
 |---------|------|---------------|
-| **Gateway** | 8000 | Reverse proxy, WebSocket hub, Redis-to-WS bridge, CORS |
+| **Gateway** | 8000 | Reverse proxy, WebSocket hub, Redis-to-WS bridge, CORS, upload proxy to Core |
 | **Core** | 8001 | Auth (register, login, JWT, OAuth, email verification, password reset), user profiles, friends, search, avatars, file uploads, in-app notifications, email dispatch |
 | **Community** | 8002 | Categories, threads, posts, votes, reactions, tags, search, pagination, admin dashboard, reports, mod actions, category requests, chat rooms (direct + group), messages, DM, bot integration |
 | **Frontend** | 5173 | React SPA (Vite dev server) |
@@ -149,6 +149,7 @@ docker compose up --build
 - `/api/v1/categories/*`, `/api/v1/threads/*`, `/api/v1/posts/*`, `/api/v1/search/*` -> community:8002
 - `/api/v1/admin/*` -> community:8002
 - `/api/v1/chat/*` -> community:8002
+- `/uploads/*` -> proxied to core:8001 (static file serving for avatars, attachments)
 
 ### Database Schema (24 tables)
 
@@ -169,9 +170,9 @@ docker compose up --build
 - SMTP calls use `timeout=2` to prevent test hangs.
 - `publish_event()` silently swallows errors -- no Redis mocking needed in tests.
 - Composite test app mounts all service routers into a single process via `importlib`.
-- Run tests: `pytest -x -v --tb=short -k "not subscribe"` (from project root, with venv activated).
+- Run tests: `pytest services/tests/test_auth.py services/tests/test_forum.py services/tests/test_audit.py services/tests/test_validation.py -x -v --tb=short -k "not subscribe"` (from project root, with venv activated).
 - Clean up after: `rm -f test_services.db`.
-- **22 tests total**: 5 auth tests + 7 forum tests + 10 audit tests. All must pass.
+- **31 tests total**: 5 auth tests + 7 forum tests + 10 audit tests + 9 validation tests. All must pass.
 
 ### Code Conventions
 
@@ -185,10 +186,15 @@ docker compose up --build
 ### Frontend
 
 - React 18 + Vite 6 + JavaScript, plain CSS (no Tailwind, no CSS modules, no styled-components).
-- Google Fonts loaded in `frontend/index.html`: Manrope (400, 500, 700, 800) + Space Grotesk (500, 700).
+- System fonts (`-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto`) — no Google Fonts.
 - React Router DOM v6 with `NavLink`, `useNavigate`, `useParams`, `useSearchParams`.
 - All users are clickable everywhere and open a modal with message/friend/report actions.
 - Design tokens (CSS custom properties) defined in `:root` in `global.css`. Both dark and light themes supported via `[data-theme="light"]`.
+- Reddit-inspired design: `#FF4500` accent, top navbar, card-style feed, nested comments with collapse lines, right sidebar with community info.
+- Custom SVG logo (`frontend/public/logo.svg`) — shield with pulse line, used as navbar brand and favicon.
+- Pulse bot avatar (`frontend/public/pulse-avatar.svg`) — orange robot head, auto-assigned in frontend for `pulse` username.
+- `LoginPrompt` component (`frontend/src/components/LoginPrompt.jsx`) — reusable banner for unauthenticated users attempting protected actions.
+- `MentionTextarea` (`frontend/src/components/MentionTextarea.jsx`) — `@mention` autocomplete with debounced user search, keyboard navigation, and avatar display.
 
 ### Real-time Architecture
 
@@ -366,6 +372,88 @@ docker compose up --build
 - Frontend "Activity Log" tab (7th tab) in Admin Dashboard with dropdown filters (action type, entity type), color-coded action badges, paginated log entries, dark/light theme support.
 - Reuses existing `Pagination` component and `formatTimeAgo()` from `timeUtils.js`.
 - 10 dedicated audit tests (`test_audit.py`) covering record creation, endpoint access, role-based visibility, filters, and pagination.
+
+### Feature 9: Reddit-Style Frontend Redesign
+- Complete CSS rewrite (~3,260 lines in `global.css`): Reddit dark theme (`#030303` bg, `#1a1a1b` cards, `#FF4500` accent), full light theme (`#dae0e6` canvas, white cards), system fonts.
+- Top navbar replaces left sidebar (`MainLayout.jsx`): brand logo, search bar, notification bell, theme toggle, user menu.
+- Card-style post feed with vote column on left, compact metadata (`ThreadCard.jsx`, `HomePage.jsx`).
+- Reddit-style nested comment threads with border-left collapse lines (`ThreadPage.jsx`).
+- Right sidebar with community info panel, rules, trending communities (`HomePage.jsx`).
+- All JSX files rewritten with correct CSS class names matching the new design system.
+- Pages updated: HomePage, ThreadPage, ChatPage, DashboardPage, ProfilePage, PeoplePage, AdminPage, LoginPage.
+- Components updated: ThreadCard, UserIdentity, NotificationCenter, UserActionModal, MentionTextarea, Pagination, AttachmentList.
+- Custom SVG logo (`frontend/public/logo.svg`) used as navbar brand and favicon.
+- Pulse bot avatar (`frontend/public/pulse-avatar.svg`) — orange robot head with pulse wave detail.
+- Google Fonts removed from `index.html` — now uses system fonts.
+
+### Feature 10: UX Improvements
+- **Avatar upload fix**: Gateway proxies `/uploads/*` to Core service instead of serving static files locally. Eliminates filesystem-sync issues between Docker containers.
+- **Login prompt for guests**: `LoginPrompt` component shows a styled banner with "Log In" button when unauthenticated users attempt protected actions (voting, replying, reacting). Replaces silent no-ops.
+- **Notification button differentiation**: "Enable browser notifications" uses bell-with-slash icon (`🔕`) + pulsing glow animation, distinct from the notification center bell (`🔔`).
+- **Vote score readability**: Increased vote score font to `text-sm` (13px) with `font-weight: 800`, widened vote column to 48px.
+- **Create Post prominence**: Orange circle `+` icon, 2px accent border on hover, `font-weight: 600`.
+- **@pulse bot in threads**: Bot is now triggered by `@pulse` mentions in thread creation (not just replies). Previously only worked in post/reply creation.
+- **@mention autocomplete fix**: Fixed CSS class name mismatches (`.mention-textarea-wrapper` -> `.mention-wrapper`, `.mention-dropdown-item` -> `.mention-item`, etc.) that prevented the dropdown from rendering properly.
+- **Locked thread badge**: Added `.thread-pill-muted` CSS for visually distinguishing "Locked" badges from "Pinned" badges.
+- **Pagination active state**: Fixed active page button highlight (changed `pagination-active` to `active` to match `.pagination-btn.active` CSS selector).
+- **Panel header**: Added `.panel-header` CSS for password reset and email verification pages.
+
+### Feature 11: Comprehensive Seed/Dummy Data Script
+- `services/seed.py` — standalone script that populates the database with realistic demo data for showcasing the platform.
+- **16 users** (1 admin, 2 moderators, 12 members, 1 bot) — all with password `password123`.
+- **8 categories**: General Discussion, Backend Engineering, Frontend Engineering, DevOps and Deployment, Show and Tell, Feedback and Suggestions, Off-Topic, Help and Support.
+- **20 tags**: python, fastapi, react, docker, postgresql, redis, javascript, css, websocket, jwt, oauth, testing, performance, security, deployment, beginner, discussion, bug, feature-request, tutorial.
+- **22 threads** with realistic, lengthy discussion content across all categories.
+- **138 posts** including deeply nested reply chains (2-3 levels deep).
+- **769 votes** (weighted 85% upvote / 15% downvote) + **129 reactions** (emoji).
+- **5 chat rooms** (3 group + 2 direct) with **57 messages**.
+- **18 friend requests** (13 accepted, 4 pending, 1 declined).
+- **5 content reports** (2 pending, 2 resolved, 1 dismissed) + **2 moderation actions** (warnings).
+- **4 category requests** (2 pending, 1 approved, 1 rejected).
+- **15 notifications** of various types (reply, mention, friend request, report, mod warning).
+- **30 audit log entries** covering registration, role changes, category creation, moderation.
+- Welcome thread pinned; Community Guidelines thread pinned + locked.
+- Idempotent: checks for existing admin user before seeding; safe to run multiple times.
+- Supports both SQLite (local dev, `--sqlite` flag) and PostgreSQL (Docker, via `DATABASE_URL_OVERRIDE`).
+- Run: `python services/seed.py` (local) or `docker compose exec core python /shared/../seed.py` (Docker).
+
+### Feature 12: Full-Stack Bug Fix Audit
+- **User report persistence**: `POST /users/{id}/report` now creates a `ContentReport` row (was only creating notifications). Added duplicate check and audit logging. `_resolve_report_content` in admin_services.py handles `entity_type="user"`. `list_reports` filter shows user reports to all staff.
+- **Notification commit bugs**: `update_thread` and `update_post` in `forum_services.py` now call `db.commit()` after creating notifications (previously notifications were created after the main commit and never persisted).
+- **Bot race conditions**: `schedule_forum_bot_reply` and `schedule_chat_bot_reply` are now called AFTER `db.commit()` in `create_thread`, `create_post`, and `create_chat_message`. Previously the bot background thread could start before the triggering message was committed.
+- **Vote score invisible in dark mode**: Added `background: none; border: none; color: inherit;` to `.vote-score` and `.vote-score-clickable` in global.css.
+- **Voters popover positioning**: Added `position: relative` to `.vote-controls`, changed popover from `top: 100%` to `bottom: 100%` (opens above), added `max-height`, `overflow-y: auto`, z-index 50.
+- **Avatar upload Docker permissions**: Added `RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app/uploads` before `USER appuser` in all 3 Dockerfiles.
+- **Notification enable button**: Removed pulsing 🔕 button from navbar; moved desktop notification toggle to ProfilePage Preferences panel.
+- **OAuth avatar URLs**: `ProfilePage.jsx` now guards `avatar_url` with `startsWith('http')` check before calling `assetUrl()`, preventing broken URLs for OAuth users with external avatar URLs.
+- **VoteRequest schema**: Added `field_validator` to reject `value=0` (previously `ge=-1, le=1` allowed zero which is meaningless).
+- **AuthContext stale closure**: Converted `refreshProfile` from inline function to `useCallback` with proper deps, added to `useMemo` dependency array.
+- **AdminPage initial tab**: Admin users no longer start on the wrong tab on first render (profile is null initially so `isAdmin` was false). Added `useEffect` to set correct tab once profile loads.
+- **ChatPage send button**: Changed `type="submit"` to `type="button"` (button is not inside a `<form>`).
+
+### Feature 13: File Upload Hardening + GIF Support
+- **GIF support**: `image/gif` was already in `ALLOWED_CONTENT_TYPES`; now enforced end-to-end with magic-byte validation, extension whitelist, and frontend `accept` filters.
+- **Magic-byte file validation**: `storage.py` now reads the first 32 bytes of every upload and verifies against known file signatures (JPEG `FF D8 FF`, PNG `89 50 4E 47`, GIF `GIF89a`/`GIF87a`, WebP `RIFF..WEBP`, MP4 `ftyp`, WebM EBML header, PDF `%PDF`). Prevents MIME-type spoofing.
+- **File extension whitelist**: `ALLOWED_EXTENSIONS` set (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`, `.mp4`, `.webm`, `.pdf`, `.txt`, `.doc`, `.docx`). Extension must match the declared MIME type via `_EXTENSION_MIME_MAP`.
+- **Filename sanitization**: `_sanitize_filename()` strips path components (prevents directory traversal), replaces unsafe characters with underscores, collapses repeated underscores.
+- **Frontend file picker filters**: All 4 `<input type="file">` elements now have `accept` attributes: avatar uses `AVATAR_ACCEPT` (images only incl. GIF), attachments use `ATTACHMENT_ACCEPT` (images + videos + documents).
+- **Client-side file validation**: New `frontend/src/lib/uploadUtils.js` with `validateFile()` — checks file size (25 MB max), MIME type, and extension before upload. Error messages shown to user immediately.
+- **Upload entity_type whitelist**: `upload_routes.py` now rejects `linked_entity_type` values outside `{draft, thread, post, message, avatars}`.
+
+### Feature 14: Input Validation & Security Hardening
+- **XSS sanitization**: New `services/shared/shared/services/sanitize.py` with `sanitize_text()` (strips HTML tags, escapes entities, removes `javascript:`/`data:`/`vbscript:` URIs, removes `onerror=` event handlers) and `sanitize_username()` (alphanumeric + underscore only).
+- **All Pydantic schemas sanitized**: `field_validator` decorators on every user-text field: thread title/body, post body, chat message body, chat room name, bio, report reason, moderation reason, category title/description, tag name.
+- **Username pattern enforcement**: `RegisterRequest` and `UserUpdateRequest` now require `pattern=r"^[a-zA-Z0-9_]+$"` with `sanitize_username()` validator.
+- **Admin schema validation hardened**: `RoleUpdateRequest.role` restricted to `^(admin|moderator|member)$`, `ReportResolveRequest.status` to `^(resolved|dismissed)$`, `ModerationActionRequest.action_type` to `^(warn|suspend|ban)$`, `CategoryRequestReviewRequest.status` to `^(approved|rejected)$`.
+- **Admin field constraints added**: `ModerationActionRequest.reason` gets `min_length=3, max_length=2000`, `duration_hours` gets `ge=1, le=8760` (max 1 year), `CategoryRequestCreate` gets `min_length`/`max_length`/`pattern` on all fields, `CategoryModeratorRequest` fields get `ge=1`.
+- **List field bounds**: `attachment_ids` capped at 20 items (threads, posts, chat), `tag_names` at 10 items (threads), `member_ids` at 50 items (chat rooms).
+- **Search query length limit**: `q` parameter in search endpoint now has `max_length=200`.
+- **Search type validation**: `content_type` parameter restricted to `^(thread|post)$`.
+- **OAuth provider validation**: `OAuthExchangeRequest.provider` restricted to `^(google|github)$`, `code` capped at 2048 chars.
+- **Token field lengths**: `RefreshTokenRequest.refresh_token`, `VerifyEmailRequest.token`, `ResetPasswordRequest.token` all get `min_length=1, max_length=512`.
+- **Category ID validation**: `ThreadCreateRequest.category_id` gets `ge=1`.
+- **Security headers middleware**: New `SecurityHeadersMiddleware` added to all 3 services — sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 1; mode=block`, `Referrer-Policy: strict-origin-when-cross-origin`, `Content-Security-Policy` (restrictive), `Permissions-Policy`, and `Cache-Control: no-store` for authenticated responses.
+- **Rate limiting**: New `RateLimitMiddleware` with sliding-window per-IP counter — applied to `/api/v1/auth/` endpoints on Gateway (20 req/min) and Core (20 req/min). Returns 429 with `Retry-After` header.
 
 ---
 

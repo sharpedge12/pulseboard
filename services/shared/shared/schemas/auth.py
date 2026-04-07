@@ -1,10 +1,17 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from shared.services.sanitize import sanitize_text, sanitize_username
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    username: str = Field(min_length=3, max_length=50)
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_]+$")
     password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def clean_username(cls, v: str) -> str:
+        return sanitize_username(v)
 
 
 class LoginRequest(BaseModel):
@@ -40,17 +47,17 @@ class OAuthCallbackPayload(BaseModel):
 
 
 class OAuthExchangeRequest(BaseModel):
-    provider: str
-    code: str = Field(min_length=1)
+    provider: str = Field(pattern=r"^(google|github)$")
+    code: str = Field(min_length=1, max_length=2048)
     state: str | None = None
 
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(min_length=1, max_length=512)
 
 
 class VerifyEmailRequest(BaseModel):
-    token: str
+    token: str = Field(min_length=1, max_length=512)
 
 
 class MessageResponse(BaseModel):
@@ -62,5 +69,5 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    token: str
+    token: str = Field(min_length=1, max_length=512)
     new_password: str = Field(min_length=8, max_length=128)

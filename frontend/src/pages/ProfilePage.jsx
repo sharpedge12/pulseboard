@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useNotifications } from '../hooks/useNotifications';
 import { apiRequest, API_BASE_URL, getHeaders, assetUrl } from '../lib/api';
+import { validateFile, AVATAR_ACCEPT } from '../lib/uploadUtils';
 import { formatDate, formatLastSeen, isUserOnline } from '../lib/timeUtils';
 import UserIdentity from '../components/UserIdentity';
 
@@ -9,6 +11,7 @@ function ProfilePage() {
   const { userId } = useParams();
   const { profile, session, refreshProfile } = useAuth();
   const isOwnProfile = !userId || Number(userId) === profile?.id;
+  const { browserPermission, requestBrowserPermission } = useNotifications(session?.access_token);
   const [bio, setBio] = useState('');
   const [username, setUsername] = useState('');
   const [message, setMessage] = useState('');
@@ -32,7 +35,9 @@ function ProfilePage() {
     ? activeProfile.username.slice(0, 2).toUpperCase()
     : 'DU';
   const avatarSrc = activeProfile?.avatar_url
-    ? assetUrl(activeProfile.avatar_url)
+    ? activeProfile.avatar_url.startsWith('http')
+      ? activeProfile.avatar_url
+      : assetUrl(activeProfile.avatar_url)
     : null;
 
   async function loadFriendships() {
@@ -91,19 +96,33 @@ function ProfilePage() {
       return;
     }
 
+    const file = event.target.files[0];
+    const { valid, error } = validateFile(file, { imageOnly: true });
+    if (!valid) {
+      setMessage(error);
+      event.target.value = '';
+      return;
+    }
+
     try {
       const formData = new FormData();
-      formData.append('file', event.target.files[0]);
-      await fetch(`${API_BASE_URL}/users/me/avatar`, {
+      formData.append('file', file);
+      const response = await fetch(`${API_BASE_URL}/users/me/avatar`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${session.access_token}` },
         body: formData,
       });
-      setMessage('Avatar uploaded.');
-      await refreshProfile();
-    } catch (error) {
-      setMessage(error.message || 'Failed to upload avatar.');
+      if (response.ok) {
+        setMessage('Avatar uploaded.');
+        await refreshProfile();
+      } else {
+        const err = await response.json().catch(() => ({}));
+        setMessage(err.detail || 'Failed to upload avatar.');
+      }
+    } catch (err) {
+      setMessage(err.message || 'Failed to upload avatar.');
     }
+    event.target.value = '';
   }
 
   async function handleFriendRequest(requestId, action) {
@@ -122,17 +141,17 @@ function ProfilePage() {
   return (
     <section className="page-grid profile-layout">
       {/* Profile header card — banner-style at top */}
-      <div className="profile-header">
+      <div className="panel stack-gap" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 'var(--space-4)' }}>
         {avatarSrc ? (
-          <img className="avatar-preview" src={avatarSrc} alt="avatar" />
+          <img className="profile-avatar-preview" src={avatarSrc} alt="avatar" />
         ) : (
           <div className="profile-badge">{initials}</div>
         )}
-        <div className="profile-header-info">
+        <div>
           <h3>
             {activeProfile?.username || 'User'}
-            {activeProfile?.last_seen && (
-              <span className={`online-indicator ${isUserOnline(activeProfile.last_seen) ? 'online-indicator-active' : ''}`} />
+            {activeProfile?.last_seen && isUserOnline(activeProfile.last_seen) && (
+              <span className="online-indicator" style={{ display: 'inline-block', position: 'relative', marginLeft: 'var(--space-2)' }} />
             )}
           </h3>
           <span className="muted-copy">
@@ -154,9 +173,7 @@ function ProfilePage() {
       {/* Edit profile (own) or account info (other) */}
       {isOwnProfile ? (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Edit Profile</h3>
-          </div>
+          <h3>Edit Profile</h3>
 
           <input
             className="input"
@@ -171,7 +188,7 @@ function ProfilePage() {
             }}
           />
           <textarea
-            className="input textarea"
+            className="input"
             placeholder="Short bio"
             value={bio}
             onChange={(e) => setBio(e.target.value)}
@@ -182,12 +199,12 @@ function ProfilePage() {
               }
             }}
           />
-          <div className="inline-actions">
-            <label className="secondary-button upload-label">
+          <div className="edit-inline-actions">
+            <label className="secondary-button" style={{ cursor: 'pointer' }}>
               Upload avatar
               <input
                 type="file"
-                accept="image/*"
+                accept={AVATAR_ACCEPT}
                 hidden
                 onChange={handleAvatarUpload}
               />
@@ -204,9 +221,7 @@ function ProfilePage() {
         </div>
       ) : (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Account Info</h3>
-          </div>
+          <h3>Account Info</h3>
           {activeProfile && (
             <UserIdentity user={activeProfile} onRefresh={loadFriendships} />
           )}
@@ -218,13 +233,43 @@ function ProfilePage() {
         </div>
       )}
 
+      {/* Preferences (own profile only) */}
+      {isOwnProfile && (
+        <div className="panel stack-gap">
+          <h3>Preferences</h3>
+          <div className="pref-row">
+            <div className="pref-info">
+              <span className="pref-label">Desktop notifications</span>
+              <span className="muted-copy">
+                {browserPermission === 'granted'
+                  ? 'Enabled — you will receive browser notifications for new messages and replies.'
+                  : browserPermission === 'denied'
+                    ? 'Blocked — update your browser settings to allow notifications from this site.'
+                    : 'Disabled — enable to get notified about new replies, messages, and mentions.'}
+              </span>
+            </div>
+            {browserPermission === 'granted' ? (
+              <span className="pref-status pref-status-on">On</span>
+            ) : browserPermission === 'denied' ? (
+              <span className="pref-status pref-status-off">Blocked</span>
+            ) : (
+              <button
+                className="action-button"
+                type="button"
+                onClick={requestBrowserPermission}
+              >
+                Enable
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Friends section (own profile only) */}
       {isOwnProfile && (
         <div className="panel stack-gap">
-          <div className="panel-header">
-            <h3>Friends</h3>
-            <span className="muted-copy">Requests &amp; connections</span>
-          </div>
+          <h3>Friends</h3>
+          <span className="muted-copy">Requests &amp; connections</span>
 
           {/* Incoming */}
           <div className="stack-gap">
@@ -233,13 +278,13 @@ function ProfilePage() {
               <p className="muted-copy">No incoming requests.</p>
             )}
             {friendData.incoming.map((request) => (
-              <div key={request.id} className="notification-item">
+              <div key={request.id} className="admin-list-item">
                 <UserIdentity
                   user={request.user}
                   compact
                   onRefresh={loadFriendships}
                 />
-                <div className="inline-actions">
+                <div className="edit-inline-actions">
                   <button
                     className="action-button"
                     type="button"
@@ -266,7 +311,7 @@ function ProfilePage() {
               <p className="muted-copy">No outgoing requests.</p>
             )}
             {friendData.outgoing.map((request) => (
-              <div key={request.id} className="notification-item">
+              <div key={request.id} className="admin-list-item">
                 <UserIdentity
                   user={request.user}
                   compact
@@ -284,7 +329,7 @@ function ProfilePage() {
               <p className="muted-copy">No friends added yet.</p>
             )}
             {friendData.friends.map((friend) => (
-              <div key={friend.id} className="notification-item">
+              <div key={friend.id} className="admin-list-item">
                 <UserIdentity
                   user={friend}
                   compact

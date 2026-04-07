@@ -38,6 +38,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from shared.core.security_headers import SecurityHeadersMiddleware  # noqa: E402
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 
 @app.get("/health", tags=["health"])
 def health_check() -> dict[str, str]:

@@ -2,20 +2,10 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useNotifications } from '../hooks/useNotifications';
 import { useGlobalUpdates } from '../hooks/useGlobalUpdates';
-import { apiRequest } from '../lib/api';
+import { apiRequest, assetUrl } from '../lib/api';
 import NotificationCenter from '../components/NotificationCenter';
-
-const NAV_ICONS = {
-  '/': '\u2302',
-  '/dashboard': '\u2261',
-  '/chat': '\u2709',
-  '/people': '\u2603',
-  '/profile': '\u263A',
-  '/admin': '\u2699',
-};
 
 function MainLayout() {
   const location = useLocation();
@@ -27,12 +17,9 @@ function MainLayout() {
     notifications,
     markAllRead,
     markOneRead,
-    browserPermission,
-    requestBrowserPermission,
   } = useNotifications(session?.access_token);
 
   const [categories, setCategories] = useState([]);
-  const [pinnedSlugs, setPinnedSlugs] = useLocalStorage('pulseboard-pinned-communities', []);
 
   useEffect(() => {
     let ignore = false;
@@ -58,165 +45,128 @@ function MainLayout() {
 
   useGlobalUpdates({ onCategoryCreated: handleCategoryCreated });
 
-  function togglePin(slug) {
-    setPinnedSlugs((current) =>
-      current.includes(slug)
-        ? current.filter((s) => s !== slug)
-        : [...current, slug]
-    );
-  }
-
-  const pinnedCategories = categories.filter((cat) => pinnedSlugs.includes(cat.slug));
-  const isForumActive = location.pathname === '/' || location.pathname.startsWith('/threads');
-
   const navItems = [
-    { to: '/', label: 'Forum' },
+    { to: '/', label: 'Home' },
     ...(isAuthenticated ? [{ to: '/dashboard', label: 'Dashboard' }] : []),
     { to: '/chat', label: 'Chat' },
     { to: '/people', label: 'People' },
-    { to: '/profile', label: 'Profile' },
     ...(['admin', 'moderator'].includes(profile?.role)
-      ? [{ to: '/admin', label: profile?.role === 'admin' ? 'Admin' : 'Moderation' }]
+      ? [{ to: '/admin', label: profile?.role === 'admin' ? 'Admin' : 'Mod' }]
       : []),
   ];
 
   return (
     <div className="shell">
-      <aside className="sidebar">
-        <div>
-          <p className="eyebrow">PulseBoard</p>
-          <h1>Discussion forum for teams.</h1>
-        </div>
+      {/* ── Top Navbar ── */}
+      <nav className="navbar">
+        <NavLink to="/" className="navbar-brand">
+          <img src="/logo.svg" alt="" className="navbar-brand-logo" />
+          <span>pulseboard</span>
+        </NavLink>
 
-        <nav className="nav">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                isActive ? 'nav-link nav-link-active' : 'nav-link'
+        <div className="navbar-search">
+          <input
+            type="text"
+            placeholder="Search PulseBoard"
+            onFocus={() => {
+              if (location.pathname !== '/') {
+                window.location.href = '/?focus=search';
               }
-            >
-              <span>{NAV_ICONS[item.to] || '\u25CF'}</span>
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-
-        {/* Pinned communities — show when on Forum pages */}
-        {isForumActive && categories.length > 0 && (
-          <div className="sidebar-pinned-section">
-            <span className="card-label">Pinned Communities</span>
-            {pinnedCategories.length === 0 && (
-              <p className="muted-copy" style={{ fontSize: 'var(--text-xs)' }}>
-                No pinned communities. Click the pin icon below to add some.
-              </p>
-            )}
-            {pinnedCategories.map((cat) => (
-              <NavLink
-                key={cat.slug}
-                to={`/?community=${cat.slug}`}
-                className="pinned-community-link"
-              >
-                <span>r/{cat.slug}</span>
-                <button
-                  className="pin-button pin-button-active"
-                  type="button"
-                  title="Unpin community"
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePin(cat.slug); }}
-                >
-                  &#x2716;
-                </button>
-              </NavLink>
-            ))}
-
-            <details className="pin-selector">
-              <summary className="pin-selector-toggle">
-                Manage pins
-              </summary>
-              <div className="pin-selector-list">
-                {categories.map((cat) => (
-                  <button
-                    key={cat.slug}
-                    className={`pin-selector-item ${pinnedSlugs.includes(cat.slug) ? 'pin-selector-item-active' : ''}`}
-                    type="button"
-                    onClick={() => togglePin(cat.slug)}
-                  >
-                    <span>r/{cat.slug}</span>
-                    <span className="pin-icon">
-                      {pinnedSlugs.includes(cat.slug) ? '\u2713' : '\u002B'}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </details>
-          </div>
-        )}
-
-        <button
-          className="theme-toggle"
-          type="button"
-          onClick={toggleTheme}
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          <span>{theme === 'dark' ? '\u2600' : '\u263E'}</span>
-          {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-        </button>
-
-        <div className="sidebar-card">
-          <strong>
-            {profile
-              ? `${profile.username}`
-              : 'Sign in to get started'}
-          </strong>
-          <span>
-            {profile
-              ? profile.role
-              : 'Discussion forum for teams'}
-          </span>
+            }}
+          />
         </div>
-      </aside>
 
-      <main className="content">
-        <header className="topbar">
-          <h2>PulseBoard</h2>
-          <div className="topbar-actions">
-            {isAuthenticated && !isLoadingProfile && (
-              <>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={() => setIsNotificationCenterOpen((c) => !c)}
-                >
-                  Notifications{unreadCount > 0 ? ` (${unreadCount})` : ''}
-                </button>
-                {browserPermission !== 'granted' && (
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={requestBrowserPermission}
-                  >
-                    Enable alerts
-                  </button>
+        <div className="navbar-actions">
+          {isAuthenticated && !isLoadingProfile && (
+            <>
+              <button
+                className="navbar-icon-btn"
+                type="button"
+                onClick={() => setIsNotificationCenterOpen((c) => !c)}
+                title="Notifications"
+              >
+                &#x1F514;
+                {unreadCount > 0 && (
+                  <span className="notif-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>
                 )}
-              </>
-            )}
-            {isAuthenticated && !isLoadingProfile ? (
-              <button className="action-button" type="button" onClick={logout}>
-                Sign out
               </button>
-            ) : !isLoadingProfile ? (
-              <NavLink className="action-button" to="/login">
-                Sign in
-              </NavLink>
-            ) : null}
-          </div>
-        </header>
+              <button
+                className="theme-toggle"
+                type="button"
+                onClick={toggleTheme}
+                title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+              >
+                {theme === 'dark' ? '\u2600' : '\u263E'}
+              </button>
+            </>
+          )}
 
+          {isAuthenticated && !isLoadingProfile ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <NavLink to="/profile" className="navbar-user" title="Profile">
+                <span className="navbar-user-avatar">
+                  {profile?.avatar_url ? (
+                    <img src={assetUrl(profile.avatar_url)} alt="" />
+                  ) : (
+                    (profile?.username || '?')[0].toUpperCase()
+                  )}
+                </span>
+                <span className="navbar-user-name">{profile?.username}</span>
+              </NavLink>
+              <button className="navbar-btn" type="button" onClick={logout}>
+                Log Out
+              </button>
+            </div>
+          ) : !isLoadingProfile ? (
+            <NavLink className="navbar-btn-primary navbar-btn" to="/login">
+              Log In
+            </NavLink>
+          ) : null}
+
+          {!isAuthenticated && !isLoadingProfile && (
+            <button
+              className="theme-toggle"
+              type="button"
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            >
+              {theme === 'dark' ? '\u2600' : '\u263E'}
+            </button>
+          )}
+        </div>
+      </nav>
+
+      {/* ── Horizontal Nav Row ── */}
+      <div className="nav-row">
+        {navItems.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === '/'}
+            className={({ isActive }) =>
+              isActive ? 'nav-link nav-link-active' : 'nav-link'
+            }
+          >
+            {item.label}
+          </NavLink>
+        ))}
+        {categories.slice(0, 5).map((cat) => (
+          <NavLink
+            key={cat.slug}
+            to={`/?community=${cat.slug}`}
+            className="nav-link"
+          >
+            r/{cat.slug}
+          </NavLink>
+        ))}
+      </div>
+
+      {/* ── Main Content ── */}
+      <main className="content">
         <Outlet />
       </main>
 
+      {/* ── Notification Drawer ── */}
       <NotificationCenter
         isOpen={isNotificationCenterOpen}
         notifications={notifications}

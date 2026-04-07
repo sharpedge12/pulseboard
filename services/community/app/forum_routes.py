@@ -446,11 +446,13 @@ search_router = APIRouter()
 
 @search_router.get("", response_model=SearchResponse)
 def search_content(
-    q: str = Query(default=""),
-    category: str | None = Query(default=None),
-    author: str | None = Query(default=None),
-    content_type: str | None = Query(default=None, alias="type"),
-    tag: str | None = Query(default=None),
+    q: str = Query(default="", max_length=200),
+    category: str | None = Query(default=None, max_length=120),
+    author: str | None = Query(default=None, max_length=50),
+    content_type: str | None = Query(
+        default=None, alias="type", pattern="^(thread|post)$"
+    ),
+    tag: str | None = Query(default=None, max_length=60),
     db: Session = Depends(get_db),
 ) -> SearchResponse:
     return search_forum(db, q, category, author, content_type, tag=tag)
