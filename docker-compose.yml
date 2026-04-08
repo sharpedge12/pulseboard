@@ -101,6 +101,8 @@ services:
       - ./services/shared:/shared
       - upload_data:/app/uploads
     depends_on:
+      core:
+        condition: service_started
       db:
         condition: service_healthy
       redis:

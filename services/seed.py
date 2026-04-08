@@ -3,6 +3,41 @@ Comprehensive seed script for PulseBoard.
 
 Populates the database with realistic dummy data for demo / showcase purposes.
 
+INTERVIEW TALKING POINTS
+-------------------------
+This script demonstrates several important software engineering concepts:
+
+1. **Idempotent design** -- The script checks whether seeding has already been
+   performed (by looking for an existing admin user) before inserting anything.
+   This means running ``python services/seed.py`` multiple times is safe; it
+   will not create duplicate data.  Idempotency is critical for any script that
+   touches a database, especially in CI/CD pipelines or Docker entrypoints.
+
+2. **Flexible database targeting** -- The script can seed either SQLite (for
+   local development without Docker) or PostgreSQL (for production-like
+   environments).  It checks ``--sqlite`` CLI flag and the
+   ``DATABASE_URL_OVERRIDE`` environment variable to determine which database
+   engine to use.
+
+3. **Reproducible randomness** -- ``random.seed(42)`` ensures the same random
+   data is generated every run.  This is useful for debugging and for writing
+   assertions in tests that depend on seeded data.  The constant 42 is a
+   convention (Hitchhiker's Guide reference) -- any fixed integer works.
+
+4. **Data relationship integrity** -- The script creates data in
+   dependency-order: users first, then categories, tags, threads, posts, etc.
+   ``db.flush()`` is called after each batch to force the ORM to assign
+   auto-increment primary keys (``id`` columns) that later rows reference as
+   foreign keys.  The final ``db.commit()`` makes everything permanent in a
+   single transaction -- if any step fails, ``db.rollback()`` in the except
+   block ensures we don't leave partial data.
+
+5. **Realistic data distribution** -- Votes use weighted random sampling (85%
+   upvote / 15% downvote) to simulate real community engagement patterns.
+   Timestamps are spread over the last 30 days to make the feed look
+   naturally aged.  Different entity types (threads, posts, chat messages)
+   have different volume ratios mirroring real forum activity.
+
 Usage
 -----
 # Local development (uses SQLite automatically):
@@ -43,6 +78,12 @@ Seeded accounts (all passwords are ``password123``):
 | luna      | luna@pulseboard.app       | MEMBER    |
 | pulse     | pulse-bot@pulseboard.app  | MEMBER    |
 +-----------+---------------------------+-----------+
+
+Data volume summary:
+  16 users, 8 categories, 20 tags, 22 threads, ~138 posts, ~769 votes,
+  ~129 reactions, 18 friend requests, 5 chat rooms, ~57 messages,
+  5 content reports, 2 moderation actions, 4 category requests,
+  15 notifications, 30 audit log entries.
 """
 
 from __future__ import annotations
@@ -54,17 +95,42 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Make sure the shared package is importable regardless of where we run from.
+# PATH SETUP: Make sure the shared package is importable regardless of
+# where we invoke the script from (project root, services/, or Docker).
+#
+# Why this matters: Python resolves imports relative to sys.path entries.
+# When you run ``python services/seed.py``, only the directory containing
+# seed.py (i.e. ``services/``) is on sys.path by default.  We need the
+# project root (for top-level imports) and the ``services/shared/``
+# directory (for the ``shared`` package) to be importable too.
+#
+# ``Path(__file__).resolve()`` gives us the absolute path to this file,
+# even if it was invoked via a symlink.  ``.parent`` walks up the tree.
 # ---------------------------------------------------------------------------
-_project_root = Path(__file__).resolve().parent.parent
-_services_dir = Path(__file__).resolve().parent
+_project_root = Path(__file__).resolve().parent.parent  # e.g. /app or repo root
+_services_dir = Path(__file__).resolve().parent  # e.g. /app/services
 sys.path.insert(0, str(_project_root))
 sys.path.insert(0, str(_services_dir))
-sys.path.insert(0, str(_services_dir / "shared"))
+sys.path.insert(0, str(_services_dir / "shared"))  # allows ``from shared.xxx``
 
 # ---------------------------------------------------------------------------
-# Allow running outside Docker by defaulting to SQLite when PostgreSQL is
-# not available.  Pass --sqlite flag or set DATABASE_URL_OVERRIDE env var.
+# DATABASE URL SELECTION
+# ---------------------------------------------------------------------------
+# This block decides which database to seed:
+#
+# 1. If ``--sqlite`` is passed on the command line, use a local SQLite file
+#    at the project root (``seed_data.db``).  Great for quick local demos.
+#
+# 2. If ``DATABASE_URL_OVERRIDE`` is already set in the environment (e.g.
+#    by Docker Compose or the user), use that.  This is how you seed the
+#    PostgreSQL database in a containerised setup.
+#
+# 3. If neither is set (most common for local dev), default to SQLite so
+#    the script works out-of-the-box without requiring PostgreSQL/Redis.
+#
+# The ``os.environ.setdefault`` call only writes the env var if it isn't
+# already present, so an explicit ``DATABASE_URL_OVERRIDE=postgres://...``
+# always wins.
 # ---------------------------------------------------------------------------
 if "--sqlite" in sys.argv or not os.environ.get("DATABASE_URL_OVERRIDE"):
     _sqlite_path = _project_root / "seed_data.db"
@@ -73,6 +139,13 @@ if "--sqlite" in sys.argv or not os.environ.get("DATABASE_URL_OVERRIDE"):
         f"sqlite:///{_sqlite_path}",
     )
 
+# ---------------------------------------------------------------------------
+# ORM and model imports.  These are placed after the env-var setup above
+# because ``shared.core.database`` reads ``DATABASE_URL_OVERRIDE`` at import
+# time to configure the SQLAlchemy engine.  ``# noqa: E402`` suppresses the
+# flake8 "module level import not at top of file" warning -- unavoidable here
+# because we need the env var set first.
+# ---------------------------------------------------------------------------
 from shared.core.database import SessionLocal, init_db  # noqa: E402
 from shared.core.security import hash_password  # noqa: E402
 from shared.models import (  # noqa: E402
@@ -102,16 +175,54 @@ from shared.models import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # Reproducible randomness
 # ---------------------------------------------------------------------------
+# Setting a fixed seed means every invocation generates identical "random"
+# data.  This is essential for:
+#   - Consistent screenshots / demos
+#   - Deterministic test expectations
+#   - Debugging ("the vote count should be exactly 769 every time")
+#
+# The number 42 is a common convention (from "The Hitchhiker's Guide to the
+# Galaxy").  Any constant integer produces the same reproducibility guarantee.
+# ---------------------------------------------------------------------------
 random.seed(42)
 
 # ---------------------------------------------------------------------------
-# Helper: timestamps spread over the last 30 days
+# Timestamp helpers
+# ---------------------------------------------------------------------------
+# All seeded data is anchored to ``_NOW`` (the time the script runs).
+# Two helpers produce random timestamps relative to ``_NOW``:
+#
+# - ``_past()`` -- a random moment in the last N days.  Used for threads,
+#   posts, friend requests, and other "historical" data that should look
+#   like it accumulated over time.
+#
+# - ``_recent()`` -- a random moment in the last N hours.  Used for
+#   ``last_seen`` timestamps on users so they appear recently active.
+#
+# Storing timezone-aware UTC datetimes (``timezone.utc``) is a best practice.
+# It avoids ambiguity when the server and database are in different time zones.
 # ---------------------------------------------------------------------------
 _NOW = datetime.now(timezone.utc)
 
 
 def _past(days_ago_max: int = 30) -> datetime:
-    """Return a random timestamp in the last *days_ago_max* days."""
+    """Return a random UTC timestamp within the last *days_ago_max* days.
+
+    Used to give threads, posts, and other historical records a natural
+    spread of creation dates so the seeded forum doesn't look like
+    everything was posted at the same instant.
+
+    Args:
+        days_ago_max: The maximum number of days in the past the timestamp
+            can be.  A value of 30 means the returned datetime will be
+            somewhere between "right now" and "30 days ago".
+
+    Returns:
+        A timezone-aware ``datetime`` object in UTC.
+
+    Example:
+        >>> ts = _past(7)   # random moment in the last week
+    """
     delta = timedelta(
         days=random.randint(0, days_ago_max),
         hours=random.randint(0, 23),
@@ -122,7 +233,19 @@ def _past(days_ago_max: int = 30) -> datetime:
 
 
 def _recent(hours_max: int = 48) -> datetime:
-    """Return a random timestamp in the last *hours_max* hours."""
+    """Return a random UTC timestamp within the last *hours_max* hours.
+
+    Used primarily for ``User.last_seen`` so that seeded users appear to
+    have been active recently (within the "online" threshold of 5 minutes
+    for some, within 72 hours for others).
+
+    Args:
+        hours_max: The upper bound for how many hours ago the timestamp
+            can be.
+
+    Returns:
+        A timezone-aware ``datetime`` object in UTC.
+    """
     delta = timedelta(
         hours=random.randint(0, hours_max),
         minutes=random.randint(0, 59),
@@ -131,176 +254,255 @@ def _recent(hours_max: int = 48) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Password (shared for all demo users)
+# Shared demo password
+# ---------------------------------------------------------------------------
+# Every seeded user account gets the same password so that developers and
+# reviewers can log in as any user during demos.  The password is hashed
+# once here (using pbkdf2_sha256 via passlib) and reused for all 16 users
+# rather than hashing 16 times -- a minor but nice optimisation.
 # ---------------------------------------------------------------------------
 DEMO_PASSWORD = "password123"
 DEMO_HASH = hash_password(DEMO_PASSWORD)
 
 # ===== DATA =================================================================
+# All seed data is defined as plain Python constants (lists of tuples).
+# This keeps the data declarative and easy to review.  The ``seed()``
+# function below iterates over these constants and converts them into
+# SQLAlchemy model instances.
+# ============================================================================
 
 # -- Categories ---------------------------------------------------------------
+# 8 categories that mirror typical developer community sections.
+# Format: (display_title, url_slug, description)
+#
+# The slug is used in URL paths (e.g. ``/api/v1/categories/backend``) and as
+# a lookup key in the THREADS_DATA below.  It must be unique per category.
+#
+# NOTE: The application's ``init_db()`` may create some of these categories
+# automatically on startup.  The seed function handles this gracefully by
+# checking for existing slugs before inserting (see "category reuse logic"
+# in the ``seed()`` function).
+# -----------------------------------------------------------------------------
 CATEGORIES_DATA = [
     (
-        "General Discussion",
+        "General Discussion",  # Catch-all for broad topics
         "general",
         "Project updates, questions, and broad discussion.",
     ),
     (
-        "Backend Engineering",
+        "Backend Engineering",  # API, databases, server-side
         "backend",
         "API design, FastAPI, databases, and infrastructure.",
     ),
-    ("Frontend Engineering", "frontend", "React UI, UX, and integration work."),
     (
-        "DevOps and Deployment",
+        "Frontend Engineering",  # UI, UX, React, CSS
+        "frontend",
+        "React UI, UX, and integration work.",
+    ),
+    (
+        "DevOps and Deployment",  # Docker, CI/CD, cloud
         "devops",
         "Docker, Redis, Render, Vercel, and deployment notes.",
     ),
     (
-        "Show and Tell",
+        "Show and Tell",  # Project showcases
         "showandtell",
         "Share your projects, demos, or cool things you built.",
     ),
     (
-        "Feedback and Suggestions",
+        "Feedback and Suggestions",  # Platform improvement ideas
         "feedback",
         "Ideas and suggestions for improving PulseBoard.",
     ),
-    ("Off-Topic", "offtopic", "Anything that doesn't fit elsewhere."),
-    ("Help and Support", "help", "Ask for help with bugs, setup, or usage questions."),
+    (
+        "Off-Topic",  # Casual / non-technical chatter
+        "offtopic",
+        "Anything that doesn't fit elsewhere.",
+    ),
+    (
+        "Help and Support",  # Q&A for setup, bugs, usage
+        "help",
+        "Ask for help with bugs, setup, or usage questions.",
+    ),
 ]
 
 # -- Tags ---------------------------------------------------------------------
+# 20 tags that can be attached to threads for discoverability and filtering.
+# These cover the main technology areas discussed on the platform.
+#
+# Tags are many-to-many with threads via the ``ThreadTag`` join table.
+# A thread can have up to 10 tags (enforced by schema validation elsewhere).
+# -----------------------------------------------------------------------------
 TAGS_DATA = [
-    "python",
-    "fastapi",
-    "react",
-    "docker",
-    "postgresql",
-    "redis",
-    "javascript",
-    "css",
-    "websocket",
-    "jwt",
-    "oauth",
-    "testing",
-    "performance",
-    "security",
-    "deployment",
-    "beginner",
-    "discussion",
-    "bug",
-    "feature-request",
-    "tutorial",
+    "python",  # Core backend language
+    "fastapi",  # Web framework used by PulseBoard
+    "react",  # Frontend UI library
+    "docker",  # Containerisation
+    "postgresql",  # Primary production database
+    "redis",  # Pub/sub and caching
+    "javascript",  # Frontend scripting
+    "css",  # Styling
+    "websocket",  # Real-time communication
+    "jwt",  # JSON Web Token auth
+    "oauth",  # Third-party auth (Google, GitHub)
+    "testing",  # Test strategies and tooling
+    "performance",  # Optimisation topics
+    "security",  # AppSec, hardening
+    "deployment",  # Shipping to production
+    "beginner",  # Newcomer-friendly content
+    "discussion",  # Open-ended conversations
+    "bug",  # Bug reports
+    "feature-request",  # Enhancement proposals
+    "tutorial",  # Step-by-step guides
 ]
 
 # -- Users --------------------------------------------------------------------
+# 16 user accounts representing a realistic community:
+#   - 1 admin      -- full platform control (user management, all mod powers)
+#   - 2 moderators -- can resolve reports, warn/ban users, manage categories
+#   - 12 members   -- regular community participants with varied expertise
+#   - 1 bot        -- the @pulse AI assistant (auto-replies when mentioned)
+#
+# Format: (username, email, role_enum, bio_text)
+#
+# Every account has ``is_verified=True`` and ``is_active=True`` so they can
+# log in immediately.  In production, users must verify their email first.
+#
+# The bios are written to feel like real developer profiles and showcase the
+# diversity of a healthy community (frontend, backend, data science, DevOps,
+# junior devs, senior leads, designers, security researchers, etc.).
+# -----------------------------------------------------------------------------
 USERS_DATA = [
     # (username, email, role, bio)
     (
-        "admin",
+        "admin",  # Platform administrator
         "admin@pulseboard.app",
         UserRole.ADMIN,
         "PulseBoard administrator. I keep the lights on.",
     ),
     (
-        "modmax",
+        "modmax",  # Moderator 1 of 2
         "modmax@pulseboard.app",
         UserRole.MODERATOR,
         "Community moderator. Happy to help maintain quality discussions.",
     ),
     (
-        "modsara",
+        "modsara",  # Moderator 2 of 2
         "modsara@pulseboard.app",
         UserRole.MODERATOR,
         "Moderator and backend enthusiast. FastAPI fan.",
     ),
     (
-        "alice",
+        "alice",  # Full-stack developer
         "alice@pulseboard.app",
         UserRole.MEMBER,
         "Full-stack developer. Love React and Python equally.",
     ),
     (
-        "bob",
+        "bob",  # DevOps engineer
         "bob@pulseboard.app",
         UserRole.MEMBER,
         "DevOps engineer. Docker, Kubernetes, and CI/CD pipelines.",
     ),
     (
-        "charlie",
+        "charlie",  # Frontend / CSS specialist
         "charlie@pulseboard.app",
         UserRole.MEMBER,
         "Frontend wizard. CSS is my superpower.",
     ),
     (
-        "diana",
+        "diana",  # Data scientist, new to web dev
         "diana@pulseboard.app",
         UserRole.MEMBER,
         "Data scientist exploring web dev. New to FastAPI.",
     ),
     (
-        "evan",
+        "evan",  # Junior developer
         "evan@pulseboard.app",
         UserRole.MEMBER,
         "Junior developer learning the ropes. Eager to contribute!",
     ),
     (
-        "fiona",
+        "fiona",  # Security researcher
         "fiona@pulseboard.app",
         UserRole.MEMBER,
         "Security researcher. Always thinking about edge cases.",
     ),
     (
-        "george",
+        "george",  # Tech lead / architect
         "george@pulseboard.app",
         UserRole.MEMBER,
         "Tech lead at a startup. Interested in microservices.",
     ),
     (
-        "hannah",
+        "hannah",  # UX designer who codes
         "hannah@pulseboard.app",
         UserRole.MEMBER,
         "UX designer who codes. Bridging design and engineering.",
     ),
     (
-        "ivan",
+        "ivan",  # OSS contributor, Rust + Python
         "ivan@pulseboard.app",
         UserRole.MEMBER,
         "Open-source contributor. Rust and Python are my go-to languages.",
     ),
     (
-        "julia",
+        "julia",  # Mobile dev branching into web
         "julia@pulseboard.app",
         UserRole.MEMBER,
         "Mobile developer branching into web. React Native -> React.",
     ),
     (
-        "kyle",
+        "kyle",  # Database specialist
         "kyle@pulseboard.app",
         UserRole.MEMBER,
         "Database nerd. PostgreSQL, SQLite, and query optimization.",
     ),
     (
-        "luna",
+        "luna",  # Cloud architect
         "luna@pulseboard.app",
         UserRole.MEMBER,
         "Cloud architect. AWS, GCP, and infrastructure as code.",
     ),
     (
-        "pulse",
+        "pulse",  # AI bot (@pulse)
         "pulse-bot@pulseboard.app",
-        UserRole.MEMBER,
+        UserRole.MEMBER,  # Bot has MEMBER role, not ADMIN
         "I'm Pulse, the PulseBoard AI assistant. Mention me with @pulse!",
     ),
 ]
 
 # -- Threads and Posts --------------------------------------------------------
-# Each entry: (category_slug, author_username, title, body, tag_names, posts)
-# Posts: list of (author_username, body, [replies...])
-# Replies: list of (author_username, body)
+# The heart of the seed data.  Each entry defines a complete thread with its
+# nested reply tree.
+#
+# Format: (category_slug, author_username, title, body, [tag_names], [posts])
+#   - ``category_slug`` links to CATEGORIES_DATA above
+#   - ``author_username`` must exist in USERS_DATA
+#   - ``[tag_names]`` are names from TAGS_DATA to attach via ThreadTag
+#   - ``[posts]`` is a list of top-level replies to the thread
+#
+# Each post is: (author_username, body, [replies])
+#   - ``[replies]`` is a list of nested replies (children of that post):
+#     each reply is (author_username, body)
+#
+# This recursive structure mirrors how the Reddit-style comment tree works:
+#   Thread
+#     -> Post (top-level reply, parent_post_id=None)
+#         -> Reply (nested reply, parent_post_id=post.id)
+#         -> Reply
+#     -> Post
+#         -> Reply
+#
+# 22 threads total, distributed across all 8 categories to make the forum
+# feel populated.  Thread content is realistic developer discussion to
+# demonstrate the platform's features during demos.
+# -----------------------------------------------------------------------------
 THREADS_DATA = [
-    # --- General Discussion ---
+    # =========================================================================
+    # GENERAL DISCUSSION (3 threads)
+    # =========================================================================
+    # Thread 1: Welcome thread -- will be PINNED after creation (see step 13)
     (
         "general",
         "admin",
@@ -313,26 +515,31 @@ THREADS_DATA = [
         "3. Tag your threads for better discoverability\n"
         "4. Have fun!\n\n"
         "Feel free to introduce yourself in the replies.",
-        ["discussion"],
+        ["discussion"],  # Tags for this thread
         [
+            # -- Top-level post 1: Alice introduces herself --
             (
                 "alice",
                 "Excited to be here! I'm Alice, a full-stack dev working with React and Python. Looking forward to great discussions.",
                 [
+                    # Nested reply from Bob (parent_post_id = alice's post id)
                     (
                         "bob",
                         "Welcome Alice! Fellow Python enthusiast here. What frameworks do you use?",
                     ),
+                    # Alice replies back (same parent_post_id)
                     (
                         "alice",
                         "Mainly FastAPI for the backend and React with Vite on the frontend. You?",
                     ),
+                    # Charlie also replies
                     (
                         "charlie",
                         "React gang! I'm more on the CSS side of things though.",
                     ),
                 ],
             ),
+            # -- Top-level post 2: Evan asks about the platform --
             (
                 "evan",
                 "Hi everyone! I'm Evan, a junior dev. This platform looks amazing. Who built it?",
@@ -347,11 +554,13 @@ THREADS_DATA = [
                     ),
                 ],
             ),
+            # -- Top-level post 3: Diana (no nested replies) --
             (
                 "diana",
                 "Hello from the data science world! Hoping to learn more about web development here.",
-                [],
+                [],  # Empty replies list = no nested children
             ),
+            # -- Top-level post 4: George praises real-time features --
             (
                 "george",
                 "Great initiative! The real-time features with WebSocket are impressive.",
@@ -362,6 +571,7 @@ THREADS_DATA = [
                     ),
                 ],
             ),
+            # -- Top-level post 5: Hannah compliments the design --
             (
                 "hannah",
                 "Love the Reddit-inspired design. Clean and familiar. Nice work!",
@@ -369,6 +579,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 2: Code review best practices (community knowledge-sharing)
     (
         "general",
         "george",
@@ -424,6 +635,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 3: Community Guidelines -- will be PINNED + LOCKED after creation
     (
         "general",
         "modmax",
@@ -450,7 +662,10 @@ THREADS_DATA = [
             ),
         ],
     ),
-    # --- Backend Engineering ---
+    # =========================================================================
+    # BACKEND ENGINEERING (4 threads)
+    # =========================================================================
+    # Thread 4: FastAPI dependency injection (technical deep-dive)
     (
         "backend",
         "alice",
@@ -462,7 +677,7 @@ THREADS_DATA = [
         "For auth, I chain dependencies:\n"
         "```python\ndef get_current_user(token = Depends(oauth2_scheme), db = Depends(get_db)):\n    ...\n```\n\n"
         "What patterns do you use?",
-        ["python", "fastapi"],
+        ["python", "fastapi"],  # Two tags for cross-topic discoverability
         [
             (
                 "george",
@@ -502,6 +717,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 5: PostgreSQL query optimization (database performance)
     (
         "backend",
         "kyle",
@@ -557,6 +773,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 6: JWT token rotation (security + auth design)
     (
         "backend",
         "modsara",
@@ -602,6 +819,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 7: File upload security (applied security engineering)
     (
         "backend",
         "fiona",
@@ -644,7 +862,10 @@ THREADS_DATA = [
             ),
         ],
     ),
-    # --- Frontend Engineering ---
+    # =========================================================================
+    # FRONTEND ENGINEERING (3 threads)
+    # =========================================================================
+    # Thread 8: CSS custom properties vs CSS-in-JS (design systems debate)
     (
         "frontend",
         "charlie",
@@ -662,7 +883,7 @@ THREADS_DATA = [
         "- Better TypeScript integration\n"
         "- Component-scoped by default\n\n"
         "For a Reddit-style forum, plain CSS with custom properties is the sweet spot.",
-        ["css", "react", "discussion"],
+        ["css", "react", "discussion"],  # 3 tags: cross-cutting topic
         [
             (
                 "hannah",
@@ -701,6 +922,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 9: Accessibility in web forums
     (
         "frontend",
         "hannah",
@@ -751,6 +973,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 10: React 18 concurrent features
     (
         "frontend",
         "julia",
@@ -790,7 +1013,10 @@ THREADS_DATA = [
             ),
         ],
     ),
-    # --- DevOps and Deployment ---
+    # =========================================================================
+    # DEVOPS AND DEPLOYMENT (3 threads)
+    # =========================================================================
+    # Thread 11: Docker multi-stage builds
     (
         "devops",
         "bob",
@@ -837,6 +1063,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 12: Monitoring microservices
     (
         "devops",
         "luna",
@@ -887,6 +1114,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 13: CI/CD with GitHub Actions
     (
         "devops",
         "bob",
@@ -934,7 +1162,10 @@ THREADS_DATA = [
             ),
         ],
     ),
-    # --- Show and Tell ---
+    # =========================================================================
+    # SHOW AND TELL (2 threads)
+    # =========================================================================
+    # Thread 14: CLI migration tool
     (
         "showandtell",
         "ivan",
@@ -976,6 +1207,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 15: Plotly + FastAPI dashboard
     (
         "showandtell",
         "diana",
@@ -1018,7 +1250,10 @@ THREADS_DATA = [
             ),
         ],
     ),
-    # --- Feedback and Suggestions ---
+    # =========================================================================
+    # FEEDBACK AND SUGGESTIONS (2 threads)
+    # =========================================================================
+    # Thread 16: Markdown preview feature request
     (
         "feedback",
         "hannah",
@@ -1059,6 +1294,7 @@ THREADS_DATA = [
             ("admin", "Adding this to the roadmap. Great suggestion Hannah!", []),
         ],
     ),
+    # Thread 17: Dark mode polish
     (
         "feedback",
         "evan",
@@ -1069,7 +1305,7 @@ THREADS_DATA = [
         "3. **Image borders**: Images with dark backgrounds disappear into the page.\n"
         "4. **Link colors**: The visited link color is hard to distinguish from unvisited.\n\n"
         "Screenshots attached (well, they would be if we had attachments!).",
-        ["css", "feature-request", "bug"],
+        ["css", "feature-request", "bug"],  # Tagged as both feature-request AND bug
         [
             (
                 "charlie",
@@ -1098,7 +1334,10 @@ THREADS_DATA = [
             ),
         ],
     ),
-    # --- Off-Topic ---
+    # =========================================================================
+    # OFF-TOPIC (2 threads)
+    # =========================================================================
+    # Thread 18: Development environment share
     (
         "offtopic",
         "charlie",
@@ -1158,6 +1397,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 19: Podcast/YouTube recommendations
     (
         "offtopic",
         "luna",
@@ -1195,7 +1435,10 @@ THREADS_DATA = [
             ),
         ],
     ),
-    # --- Help and Support ---
+    # =========================================================================
+    # HELP AND SUPPORT (3 threads)
+    # =========================================================================
+    # Thread 20: Local setup guide (beginner Q&A)
     (
         "help",
         "evan",
@@ -1246,6 +1489,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 21: Module import error (common beginner gotcha)
     (
         "help",
         "diana",
@@ -1279,6 +1523,7 @@ THREADS_DATA = [
             ),
         ],
     ),
+    # Thread 22: WebSocket troubleshooting
     (
         "help",
         "julia",
@@ -1325,9 +1570,22 @@ THREADS_DATA = [
 ]
 
 # -- Chat rooms and messages ---------------------------------------------------
+# 5 chat rooms: 3 group rooms + 2 direct message (DM) conversations.
+#
+# Format: (room_name, room_type, creator_username, [member_usernames], [messages])
+#   - ``room_type`` is either "group" (visible chat room) or "direct" (1-on-1 DM)
+#   - ``creator_username`` is the user who created the room
+#   - ``[member_usernames]`` includes the creator (they're also a member)
+#   - ``[messages]`` is a flat list of (sender_username, body) tuples
+#
+# Messages are spaced out over time using a base timestamp + incremental
+# offsets to simulate natural conversation flow (see the seed function).
+# -----------------------------------------------------------------------------
 CHAT_DATA = [
     # (room_name, room_type, creator_username, member_usernames, messages)
     # messages: list of (sender_username, body)
+    # ----- Group room 1: General Chat (8 members, 18 messages) -----
+    # The main community hangout -- casual, mixed topics
     (
         "General Chat",
         "group",
@@ -1387,6 +1645,8 @@ CHAT_DATA = [
             ),
         ],
     ),
+    # ----- Group room 2: Backend Dev (6 members, 12 messages) -----
+    # Focused technical discussion about backend architecture
     (
         "Backend Dev",
         "group",
@@ -1443,6 +1703,8 @@ CHAT_DATA = [
             ),
         ],
     ),
+    # ----- Group room 3: Frontend Dev (5 members, 11 messages) -----
+    # CSS, React, and design system discussions
     (
         "Frontend Dev",
         "group",
@@ -1495,10 +1757,12 @@ CHAT_DATA = [
             ),
         ],
     ),
+    # ----- DM 1: alice & bob (9 messages) -----
+    # Private conversation about pairing on CI/CD
     (
         "DM: alice & bob",
-        "direct",
-        "alice",
+        "direct",  # Direct messages have exactly 2 members
+        "alice",  # alice initiated the conversation
         ["alice", "bob"],
         [
             (
@@ -1536,10 +1800,12 @@ CHAT_DATA = [
             ),
         ],
     ),
+    # ----- DM 2: evan & modmax (7 messages) -----
+    # Mentorship-style conversation about moderation tools
     (
         "DM: evan & modmax",
         "direct",
-        "evan",
+        "evan",  # evan initiated -- junior asking a moderator for guidance
         ["evan", "modmax"],
         [
             (
@@ -1572,15 +1838,83 @@ CHAT_DATA = [
 # =============================================================================
 # SEED FUNCTION
 # =============================================================================
+# This is the main entry point.  It orchestrates the creation of all seed
+# data in a single database transaction.  If any step fails, the entire
+# transaction is rolled back (atomicity).
+#
+# The function follows a strict creation order dictated by foreign key
+# dependencies:
+#
+#   1.  Users            (no FK deps -- created first)
+#   2.  Categories       (no FK deps, but may already exist from app startup)
+#   3.  Tags             (no FK deps)
+#   4.  CategoryModerators (FK -> users, categories)
+#   5.  Threads + Posts  (FK -> users, categories; posts FK -> threads)
+#       ThreadTags       (FK -> threads, tags)
+#       ThreadSubscriptions (FK -> threads, users)
+#       Votes            (FK -> users; polymorphic entity_type/entity_id)
+#       Reactions         (FK -> users; polymorphic entity_type/entity_id)
+#   6.  FriendRequests   (FK -> users)
+#   7.  ChatRooms + Messages (FK -> users; messages FK -> rooms)
+#   8.  ContentReports   (FK -> users)
+#   9.  ModerationActions (FK -> users)
+#   10. CategoryRequests (FK -> users)
+#   11. Notifications    (FK -> users)
+#   12. AuditLogs        (FK -> users)
+#   13. Pin/lock special threads
+#
+# ``db.flush()`` after each batch tells SQLAlchemy to send INSERT statements
+# to the database and populate auto-generated ``id`` fields, WITHOUT
+# committing.  This is important because later steps need those IDs (e.g.
+# thread.id for ThreadTag, post.id for nested replies).
+#
+# The single ``db.commit()`` at the end makes all changes permanent.
+# If an exception occurs at any point, ``db.rollback()`` in the except
+# block ensures the database is left in its original state.
+# =============================================================================
 
 
 def seed() -> None:
-    """Populate the database with comprehensive demo data."""
+    """Populate the database with comprehensive demo data.
+
+    This function is **idempotent**: it checks whether the ``admin`` user
+    already exists and returns early if so.  This makes it safe to call
+    from Docker entrypoints, CI scripts, or interactive sessions without
+    risk of creating duplicate rows.
+
+    The function creates data in foreign-key dependency order:
+    users -> categories -> tags -> threads/posts -> votes/reactions ->
+    friend requests -> chat rooms/messages -> reports -> mod actions ->
+    category requests -> notifications -> audit logs.
+
+    All changes are wrapped in a single database transaction.  On any
+    failure, the transaction is rolled back and no partial data is left
+    behind.
+
+    Raises:
+        Exception: Re-raises any exception after rolling back the
+            transaction, so the caller sees the original error.
+    """
+    # Ensure all tables exist (runs CREATE TABLE IF NOT EXISTS).
+    # In production this is handled by the app startup, but for standalone
+    # seed runs (especially with SQLite) we need to call it explicitly.
     init_db()
+
+    # Open a database session.  SessionLocal is a SQLAlchemy sessionmaker
+    # configured by the shared library based on DATABASE_URL_OVERRIDE.
     db = SessionLocal()
 
     try:
-        # Idempotency check: if admin user exists, bail out.
+        # =============================================================
+        # IDEMPOTENCY CHECK
+        # =============================================================
+        # Query for the admin user.  If it exists, the database has
+        # already been seeded -- exit early to avoid duplicates.
+        #
+        # Why check for "admin" specifically?  Because admin is the very
+        # first user created below, so its existence reliably indicates
+        # that the seed function has run to completion at least once.
+        # =============================================================
         existing_admin = db.query(User).filter_by(username="admin").first()
         if existing_admin:
             print("[seed] Data already seeded (admin user exists). Skipping.")
@@ -1591,6 +1925,16 @@ def seed() -> None:
         # =================================================================
         # 1. USERS
         # =================================================================
+        # Create all 16 user accounts.  Key points:
+        #   - All share the same password hash (computed once above).
+        #   - ``is_verified=True`` so they can log in without email flow.
+        #   - ``is_active=True`` so no accounts are suspended/banned.
+        #   - ``last_seen`` is set to a recent random time so the "online
+        #     status" indicator (green dot) appears for some users.
+        #
+        # The ``users`` dict maps username -> User ORM object for easy
+        # lookup when creating threads, posts, friend requests, etc.
+        # =================================================================
         users: dict[str, User] = {}
         for username, email, role, bio in USERS_DATA:
             u = User(
@@ -1599,30 +1943,57 @@ def seed() -> None:
                 password_hash=DEMO_HASH,
                 role=role,
                 bio=bio,
-                is_verified=True,
-                is_active=True,
-                last_seen=_recent(hours_max=72),
+                is_verified=True,  # Skip email verification for demo
+                is_active=True,  # No suspended accounts in seed data
+                last_seen=_recent(hours_max=72),  # Random time in last 3 days
             )
             db.add(u)
             users[username] = u
 
+        # flush() sends INSERTs to the DB and populates each user's .id
+        # field (auto-increment primary key).  We need these IDs for the
+        # foreign key references in every subsequent step.
         db.flush()  # assign IDs
         print(f"  - Created {len(users)} users")
 
         # =================================================================
         # 2. CATEGORIES
         # =================================================================
+        # Categories may already exist because the app's ``init_db()`` or
+        # ``_run_migrations()`` can create default categories on startup.
+        #
+        # To handle this gracefully, we check each slug before inserting.
+        # If a category with that slug already exists, we REUSE it (add it
+        # to our lookup dict) rather than creating a duplicate.  This is
+        # the "category reuse logic" mentioned in AGENTS.md.
+        #
+        # This pattern is important in real-world apps where seed scripts
+        # must cooperate with application-level initialisation code.
+        # =================================================================
         categories: dict[str, Category] = {}
+        created_count = 0
         for title, slug, description in CATEGORIES_DATA:
-            c = Category(title=title, slug=slug, description=description)
-            db.add(c)
-            categories[slug] = c
+            # Check if this category was already created by app startup
+            existing = db.query(Category).filter(Category.slug == slug).first()
+            if existing:
+                categories[slug] = existing  # Reuse existing row
+            else:
+                c = Category(title=title, slug=slug, description=description)
+                db.add(c)
+                categories[slug] = c  # Track newly created row
+                created_count += 1
 
         db.flush()
-        print(f"  - Created {len(categories)} categories")
+        print(
+            f"  - Categories: {created_count} created, {len(categories) - created_count} reused"
+        )
 
         # =================================================================
         # 3. TAGS
+        # =================================================================
+        # 20 tags covering the platform's main technology areas.
+        # Tags are simple name-only rows; the many-to-many relationship
+        # with threads is handled by the ThreadTag join table (step 5).
         # =================================================================
         tags: dict[str, Tag] = {}
         for name in TAGS_DATA:
@@ -1636,15 +2007,22 @@ def seed() -> None:
         # =================================================================
         # 4. CATEGORY MODERATORS
         # =================================================================
+        # Assign the 2 moderators to categories.  Each moderator manages
+        # 4 categories, ensuring full coverage of all 8 categories.
+        #
+        # CategoryModerator is a join table linking users to categories,
+        # granting them moderation powers (resolve reports, lock threads,
+        # pin threads, etc.) within those specific categories.
+        # =================================================================
         cat_mod_pairs = [
-            ("modmax", "general"),
-            ("modmax", "backend"),
-            ("modsara", "frontend"),
-            ("modsara", "devops"),
-            ("modmax", "showandtell"),
-            ("modsara", "feedback"),
-            ("modmax", "offtopic"),
-            ("modsara", "help"),
+            ("modmax", "general"),  # modmax moderates General Discussion
+            ("modmax", "backend"),  # modmax moderates Backend Engineering
+            ("modsara", "frontend"),  # modsara moderates Frontend Engineering
+            ("modsara", "devops"),  # modsara moderates DevOps
+            ("modmax", "showandtell"),  # modmax moderates Show and Tell
+            ("modsara", "feedback"),  # modsara moderates Feedback
+            ("modmax", "offtopic"),  # modmax moderates Off-Topic
+            ("modsara", "help"),  # modsara moderates Help and Support
         ]
         for uname, cat_slug in cat_mod_pairs:
             db.add(
@@ -1657,7 +2035,25 @@ def seed() -> None:
         print(f"  - Assigned {len(cat_mod_pairs)} category moderators")
 
         # =================================================================
-        # 5. THREADS, POSTS, THREAD_TAGS, THREAD_SUBSCRIPTIONS, VOTES, REACTIONS
+        # 5. THREADS, POSTS, THREAD_TAGS, THREAD_SUBSCRIPTIONS, VOTES,
+        #    REACTIONS
+        # =================================================================
+        # This is the largest and most complex seeding step.  For each
+        # thread in THREADS_DATA, we create:
+        #
+        #   a) The Thread row itself
+        #   b) ThreadTag join rows (linking thread to its tags)
+        #   c) A ThreadSubscription for the author (auto-subscribe)
+        #   d) Random additional ThreadSubscriptions (2-6 other users)
+        #   e) Random Votes on the thread (4-12 voters)
+        #   f) Random Reactions on the thread (1-4 emoji reactions)
+        #   g) Top-level Post rows (direct replies to the thread)
+        #   h) Votes and Reactions on each post
+        #   i) Nested reply Posts (parent_post_id = parent post's ID)
+        #   j) Votes on each nested reply
+        #
+        # Timestamps are carefully ordered: thread_ts < post_ts < reply_ts
+        # so the chronological ordering makes sense in the UI.
         # =================================================================
         thread_count = 0
         post_count = 0
@@ -1665,10 +2061,14 @@ def seed() -> None:
         reaction_count = 0
         subscription_count = 0
 
+        # Emoji palette for reactions -- matches the frontend reaction picker
         emojis = ["👍", "❤️", "🔥", "😂", "🎉", "🤔", "👀", "💯"]
+
+        # All usernames except the bot (bot doesn't vote/react in seed data)
         all_usernames = [u for u in users if u != "pulse"]
 
         for cat_slug, author_uname, title, body, tag_names, posts_data in THREADS_DATA:
+            # Create the thread with a random timestamp from the past 25 days
             thread_ts = _past(days_ago_max=25)
             thread = Thread(
                 category_id=categories[cat_slug].id,
@@ -1676,18 +2076,23 @@ def seed() -> None:
                 title=title,
                 body=body,
                 created_at=thread_ts,
-                updated_at=thread_ts,
+                updated_at=thread_ts,  # Same as created_at (no edits yet)
             )
             db.add(thread)
-            db.flush()
+            db.flush()  # Get thread.id for foreign key references below
             thread_count += 1
 
-            # Tags
+            # --- Thread Tags ---
+            # Link this thread to its tags via the ThreadTag join table.
+            # Only add tags that exist in our tags dict (defensive check).
             for tname in tag_names:
                 if tname in tags:
                     db.add(ThreadTag(thread_id=thread.id, tag_id=tags[tname].id))
 
-            # Thread subscription for author
+            # --- Thread Subscription for author ---
+            # The thread creator is automatically subscribed to their own
+            # thread.  This mirrors the real app behaviour where creating
+            # a thread auto-subscribes you to notifications about replies.
             db.add(
                 ThreadSubscription(
                     thread_id=thread.id,
@@ -1696,7 +2101,10 @@ def seed() -> None:
             )
             subscription_count += 1
 
-            # Random additional subscriptions
+            # --- Random additional subscriptions ---
+            # 2-6 random users also subscribe (simulating users who follow
+            # interesting threads).  We exclude the author to avoid a
+            # duplicate subscription.
             for uname in random.sample(all_usernames, k=random.randint(2, 6)):
                 if uname != author_uname:
                     db.add(
@@ -1707,33 +2115,44 @@ def seed() -> None:
                     )
                     subscription_count += 1
 
-            # Votes on thread
+            # --- Votes on thread ---
+            # 4-12 random users vote on each thread.
+            # ``random.choices`` with ``weights=[85, 15]`` produces 85%
+            # upvotes and 15% downvotes -- this mirrors real forum
+            # engagement where most votes are positive.
             for uname in random.sample(all_usernames, k=random.randint(4, 12)):
                 value = random.choices([1, -1], weights=[85, 15])[0]
                 db.add(
                     Vote(
                         user_id=users[uname].id,
-                        entity_type="thread",
+                        entity_type="thread",  # Polymorphic: votes can be on threads or posts
                         entity_id=thread.id,
-                        value=value,
+                        value=value,  # +1 = upvote, -1 = downvote
                     )
                 )
                 vote_count += 1
 
-            # Reactions on thread
+            # --- Reactions on thread ---
+            # 1-4 users add emoji reactions to each thread.
+            # Reactions are separate from votes (you can upvote AND react).
             for uname in random.sample(all_usernames, k=random.randint(1, 4)):
                 db.add(
                     Reaction(
                         user_id=users[uname].id,
                         entity_type="thread",
                         entity_id=thread.id,
-                        emoji=random.choice(emojis),
+                        emoji=random.choice(emojis),  # Random emoji from palette
                     )
                 )
                 reaction_count += 1
 
-            # Posts (top-level replies)
+            # --- Posts (top-level replies to the thread) ---
+            # Each post in posts_data is a tuple:
+            #   (author_username, body_text, [nested_replies])
             for post_author_uname, post_body, replies_data in posts_data:
+                # Post timestamp is 1-48 hours AFTER the thread was created,
+                # simulating a natural gap between thread creation and first
+                # replies appearing.
                 post_ts = thread_ts + timedelta(
                     hours=random.randint(1, 48),
                     minutes=random.randint(0, 59),
@@ -1742,15 +2161,17 @@ def seed() -> None:
                     thread_id=thread.id,
                     author_id=users[post_author_uname].id,
                     body=post_body,
-                    parent_post_id=None,
+                    parent_post_id=None,  # None = top-level reply (not nested)
                     created_at=post_ts,
                     updated_at=post_ts,
                 )
                 db.add(post)
-                db.flush()
+                db.flush()  # Get post.id for nested replies and votes
                 post_count += 1
 
-                # Votes on post
+                # --- Votes on top-level post ---
+                # Slightly different weight than threads: 80/20 split for
+                # posts (posts are more likely to get downvotes than threads).
                 for uname in random.sample(all_usernames, k=random.randint(2, 8)):
                     value = random.choices([1, -1], weights=[80, 20])[0]
                     db.add(
@@ -1763,7 +2184,9 @@ def seed() -> None:
                     )
                     vote_count += 1
 
-                # Reactions on post
+                # --- Reactions on post (50% chance) ---
+                # Not every post gets reactions -- the 50% coin flip makes
+                # the data feel more natural.
                 if random.random() > 0.5:
                     for uname in random.sample(all_usernames, k=random.randint(1, 3)):
                         db.add(
@@ -1776,8 +2199,13 @@ def seed() -> None:
                         )
                         reaction_count += 1
 
-                # Nested replies
+                # --- Nested replies (children of this post) ---
+                # These create the Reddit-style comment tree.  Each reply
+                # has ``parent_post_id`` set to the parent post's ID,
+                # which the frontend renders as indented sub-comments
+                # with vertical collapse lines.
                 for reply_author_uname, reply_body in replies_data:
+                    # Reply timestamp is 1-24 hours after the parent post
                     reply_ts = post_ts + timedelta(
                         hours=random.randint(1, 24),
                         minutes=random.randint(0, 59),
@@ -1786,15 +2214,17 @@ def seed() -> None:
                         thread_id=thread.id,
                         author_id=users[reply_author_uname].id,
                         body=reply_body,
-                        parent_post_id=post.id,
+                        parent_post_id=post.id,  # THIS makes it a nested reply
                         created_at=reply_ts,
                         updated_at=reply_ts,
                     )
                     db.add(reply)
-                    db.flush()
+                    db.flush()  # Get reply.id for votes
                     post_count += 1
 
-                    # Votes on reply
+                    # --- Votes on nested reply ---
+                    # Fewer voters (1-5) since nested replies get less
+                    # visibility than top-level posts.
                     for uname in random.sample(all_usernames, k=random.randint(1, 5)):
                         value = random.choices([1, -1], weights=[80, 20])[0]
                         db.add(
@@ -1817,25 +2247,58 @@ def seed() -> None:
         # =================================================================
         # 6. FRIEND REQUESTS
         # =================================================================
+        # 18 friend request records demonstrating all 3 lifecycle states:
+        #   - ACCEPTED (13): the two users are now friends
+        #   - PENDING  (4):  request sent but not yet responded to
+        #   - DECLINED (1):  request was rejected
+        #
+        # This data lets the frontend show:
+        #   - Friend lists on profile pages (accepted requests)
+        #   - Pending request badges on the friends tab
+        #   - The "Add Friend" vs "Request Pending" button states
+        #
+        # For ACCEPTED and DECLINED requests, ``responded_at`` is set to
+        # a random past date (simulating when the response happened).
+        # PENDING requests have no ``responded_at`` (still waiting).
+        # =================================================================
         friend_pairs = [
-            ("alice", "bob", FriendRequestStatus.ACCEPTED),
-            ("alice", "charlie", FriendRequestStatus.ACCEPTED),
-            ("alice", "hannah", FriendRequestStatus.ACCEPTED),
-            ("bob", "george", FriendRequestStatus.ACCEPTED),
-            ("bob", "luna", FriendRequestStatus.ACCEPTED),
-            ("charlie", "hannah", FriendRequestStatus.ACCEPTED),
-            ("charlie", "julia", FriendRequestStatus.ACCEPTED),
-            ("diana", "evan", FriendRequestStatus.ACCEPTED),
-            ("diana", "modsara", FriendRequestStatus.ACCEPTED),
-            ("fiona", "ivan", FriendRequestStatus.ACCEPTED),
-            ("george", "kyle", FriendRequestStatus.ACCEPTED),
-            ("modmax", "modsara", FriendRequestStatus.ACCEPTED),
-            ("modmax", "admin", FriendRequestStatus.ACCEPTED),
-            ("evan", "alice", FriendRequestStatus.PENDING),
-            ("julia", "george", FriendRequestStatus.PENDING),
-            ("kyle", "fiona", FriendRequestStatus.PENDING),
-            ("luna", "diana", FriendRequestStatus.PENDING),
-            ("ivan", "charlie", FriendRequestStatus.DECLINED),
+            # --- 13 Accepted friendships ---
+            ("alice", "bob", FriendRequestStatus.ACCEPTED),  # Full-stack + DevOps
+            ("alice", "charlie", FriendRequestStatus.ACCEPTED),  # Full-stack + Frontend
+            ("alice", "hannah", FriendRequestStatus.ACCEPTED),  # Full-stack + UX
+            ("bob", "george", FriendRequestStatus.ACCEPTED),  # DevOps + Tech lead
+            ("bob", "luna", FriendRequestStatus.ACCEPTED),  # DevOps + Cloud
+            (
+                "charlie",
+                "hannah",
+                FriendRequestStatus.ACCEPTED,
+            ),  # Frontend + UX (natural pair)
+            ("charlie", "julia", FriendRequestStatus.ACCEPTED),  # Frontend + Mobile
+            (
+                "diana",
+                "evan",
+                FriendRequestStatus.ACCEPTED,
+            ),  # Data science + Junior dev
+            ("diana", "modsara", FriendRequestStatus.ACCEPTED),  # Member + Moderator
+            ("fiona", "ivan", FriendRequestStatus.ACCEPTED),  # Security + OSS
+            ("george", "kyle", FriendRequestStatus.ACCEPTED),  # Tech lead + DBA
+            ("modmax", "modsara", FriendRequestStatus.ACCEPTED),  # Mod team friendship
+            (
+                "modmax",
+                "admin",
+                FriendRequestStatus.ACCEPTED,
+            ),  # Mod + Admin (staff bond)
+            # --- 4 Pending requests (awaiting response) ---
+            ("evan", "alice", FriendRequestStatus.PENDING),  # Junior reaching out
+            ("julia", "george", FriendRequestStatus.PENDING),  # Mobile dev -> Tech lead
+            ("kyle", "fiona", FriendRequestStatus.PENDING),  # DBA -> Security
+            ("luna", "diana", FriendRequestStatus.PENDING),  # Cloud -> Data science
+            # --- 1 Declined request ---
+            (
+                "ivan",
+                "charlie",
+                FriendRequestStatus.DECLINED,
+            ),  # OSS -> Frontend (declined)
         ]
         for requester, recipient, status in friend_pairs:
             fr = FriendRequest(
@@ -1843,6 +2306,8 @@ def seed() -> None:
                 recipient_id=users[recipient].id,
                 status=status,
             )
+            # Set responded_at timestamp for requests that have been acted on.
+            # Pending requests don't have a response timestamp yet.
             if status in (FriendRequestStatus.ACCEPTED, FriendRequestStatus.DECLINED):
                 fr.responded_at = _past(days_ago_max=15)
             db.add(fr)
@@ -1852,6 +2317,18 @@ def seed() -> None:
 
         # =================================================================
         # 7. CHAT ROOMS AND MESSAGES
+        # =================================================================
+        # 5 rooms total: 3 group chat rooms + 2 direct messages.
+        #
+        # For each room:
+        #   a) Create the ChatRoom row
+        #   b) Create ChatRoomMember rows for each participant
+        #   c) Create Message rows with incrementally spaced timestamps
+        #
+        # Message timestamps start from a random base time (up to 10 days
+        # ago) and increment by 5-45 minutes per message.  This simulates
+        # natural conversation flow where messages arrive at irregular but
+        # plausible intervals.
         # =================================================================
         room_count = 0
         msg_count = 0
@@ -1865,14 +2342,16 @@ def seed() -> None:
         ) in CHAT_DATA:
             room = ChatRoom(
                 name=room_name,
-                room_type=room_type,
+                room_type=room_type,  # "group" or "direct"
                 created_by_id=users[creator_uname].id,
             )
             db.add(room)
-            db.flush()
+            db.flush()  # Get room.id for members and messages
             room_count += 1
 
-            # Members
+            # --- Room members ---
+            # Every username in the member list gets a ChatRoomMember row.
+            # The creator is included in the member list (they're a member too).
             for muname in member_unames:
                 db.add(
                     ChatRoomMember(
@@ -1883,7 +2362,10 @@ def seed() -> None:
 
             db.flush()
 
-            # Messages (spread over time)
+            # --- Messages ---
+            # Messages are created in chronological order.  ``base_ts`` is
+            # when the conversation started; each subsequent message is
+            # offset by ``i * random(5..45)`` minutes from the base.
             base_ts = _past(days_ago_max=10)
             for i, (sender_uname, body) in enumerate(messages_data):
                 msg_ts = base_ts + timedelta(minutes=i * random.randint(5, 45))
@@ -1904,31 +2386,46 @@ def seed() -> None:
         # =================================================================
         # 8. CONTENT REPORTS
         # =================================================================
+        # 5 sample reports demonstrating the content moderation pipeline:
+        #   - 2 PENDING   (awaiting moderator review)
+        #   - 2 RESOLVED  (moderator took action)
+        #   - 1 DISMISSED (reported content was fine, report rejected)
+        #
+        # Format: (reporter_username, entity_type, entity_id, reason,
+        #          status, resolved_by_username_or_None)
+        #
+        # ``entity_id`` values are approximate -- they reference rows
+        # created in step 5 above.  In a real app, these would be exact
+        # foreign keys, but for seed data the specific IDs matter less
+        # than having a realistic variety of report types and statuses.
+        # =================================================================
         # A few sample reports for the admin dashboard
         reports_data = [
+            # Pending reports -- moderators will see these in the admin dashboard
             (
-                "fiona",
-                "post",
-                3,
+                "fiona",  # Reporter: the security researcher
+                "post",  # Reported entity type
+                3,  # Reported entity ID (post #3)
                 "This post contains misleading information about security practices.",
-                "pending",
-                None,
+                "pending",  # Status: awaiting mod review
+                None,  # No resolver yet
             ),
             (
-                "hannah",
-                "thread",
-                18,
+                "hannah",  # Reporter: the UX designer
+                "thread",  # Reporting an entire thread
+                18,  # Thread #18 (dev environment thread)
                 "Title is clickbait / misleading.",
                 "pending",
                 None,
             ),
+            # Resolved reports -- moderator reviewed and took action
             (
-                "modmax",
+                "modmax",  # Even moderators can report content
                 "post",
                 10,
                 "Off-topic reply that derails the discussion.",
-                "resolved",
-                "modmax",
+                "resolved",  # Status: moderator resolved this
+                "modmax",  # Resolved by same person (self-handled)
             ),
             (
                 "alice",
@@ -1936,14 +2433,15 @@ def seed() -> None:
                 15,
                 "Potential spam / self-promotion.",
                 "resolved",
-                "modsara",
+                "modsara",  # Resolved by a different moderator
             ),
+            # Dismissed report -- reported content was deemed acceptable
             (
                 "george",
                 "thread",
                 5,
                 "Duplicate thread, same topic was already discussed.",
-                "dismissed",
+                "dismissed",  # Status: report rejected by moderator
                 "modmax",
             ),
         ]
@@ -1962,6 +2460,7 @@ def seed() -> None:
                 reason=reason,
                 status=status,
             )
+            # Set resolution metadata for non-pending reports
             if resolved_by_uname:
                 report.resolved_by = users[resolved_by_uname].id
                 report.resolved_at = _past(days_ago_max=5)
@@ -1973,14 +2472,24 @@ def seed() -> None:
         # =================================================================
         # 9. MODERATION ACTIONS
         # =================================================================
+        # 2 warning actions demonstrating the moderation system.
+        # Action types in the real app: "warn", "suspend", "ban".
+        #
+        # We only seed warnings (the mildest action) because suspend/ban
+        # would require setting ``is_active=False`` on the target user,
+        # which would prevent them from logging in during demos.
+        #
+        # Format: (moderator_username, target_username, action_type,
+        #          reason, duration_hours_or_None, report_id_or_None)
+        # =================================================================
         mod_actions_data = [
             (
-                "modmax",
-                "ivan",
-                "warn",
+                "modmax",  # Moderator who issued the action
+                "ivan",  # User receiving the warning
+                "warn",  # Action type (warn | suspend | ban)
                 "Off-topic posting in the Backend Engineering category.",
-                None,
-                None,
+                None,  # duration_hours: None for warnings
+                None,  # report_id: not linked to a specific report
             ),
             (
                 "modsara",
@@ -2005,8 +2514,8 @@ def seed() -> None:
                     target_user_id=users[target_uname].id,
                     action_type=action_type,
                     reason=reason,
-                    duration_hours=duration,
-                    report_id=report_id,
+                    duration_hours=duration,  # None for warns; hours for suspensions
+                    report_id=report_id,  # Optional link to originating report
                 )
             )
 
@@ -2016,25 +2525,37 @@ def seed() -> None:
         # =================================================================
         # 10. CATEGORY REQUESTS
         # =================================================================
+        # 4 requests from users asking admin to create new categories.
+        # Demonstrates the category request workflow with all 3 statuses:
+        #   - 2 PENDING  (awaiting admin review)
+        #   - 1 APPROVED (admin accepted the request)
+        #   - 1 REJECTED (admin denied the request)
+        #
+        # Format: (requester_username, title, slug, description, status,
+        #          reviewer_username_or_None)
+        #
+        # Note: approved requests don't automatically create the category
+        # in this seed data -- the admin would do that manually.
+        # =================================================================
         cat_requests_data = [
             (
-                "diana",
+                "diana",  # Data scientist requesting an ML category
                 "Machine Learning",
                 "ml",
                 "Discuss ML models, training, and deployment.",
-                "pending",
+                "pending",  # Still awaiting admin review
                 None,
             ),
             (
-                "ivan",
+                "ivan",  # OSS contributor requesting an open-source category
                 "Open Source",
                 "opensource",
                 "Collaboration on open-source projects.",
-                "approved",
-                "admin",
+                "approved",  # Admin approved this request
+                "admin",  # Reviewed by admin
             ),
             (
-                "julia",
+                "julia",  # Mobile dev requesting a mobile category
                 "Mobile Development",
                 "mobile",
                 "React Native, Flutter, and native mobile dev.",
@@ -2042,11 +2563,11 @@ def seed() -> None:
                 None,
             ),
             (
-                "george",
+                "george",  # Tech lead requesting system design category
                 "System Design",
                 "systemdesign",
                 "Architecture patterns and system design discussions.",
-                "rejected",
+                "rejected",  # Admin rejected -- perhaps too niche
                 "admin",
             ),
         ]
@@ -2065,6 +2586,7 @@ def seed() -> None:
                 description=desc,
                 status=status,
             )
+            # Set review metadata for non-pending requests
             if reviewer_uname:
                 cr.reviewed_by = users[reviewer_uname].id
                 cr.reviewed_at = _past(days_ago_max=5)
@@ -2076,12 +2598,33 @@ def seed() -> None:
         # =================================================================
         # 11. NOTIFICATIONS
         # =================================================================
+        # 15 notifications of various types, demonstrating all notification
+        # categories the platform supports:
+        #
+        #   - "reply"          (7): Someone replied to your thread/post
+        #   - "mention"        (1): Someone @mentioned you
+        #   - "friend_request" (1): New incoming friend request
+        #   - "friend_accept"  (1): Your friend request was accepted
+        #   - "report"         (2): New content report (sent to staff)
+        #   - "mod_warning"    (1): You received a moderator warning
+        #
+        # Each notification has a ``payload`` dict containing contextual
+        # data (thread_id, post_id, from_user, etc.) that the frontend
+        # uses to render the notification and link to the right page.
+        #
+        # ``is_read`` is randomly set with a 60% read / 40% unread split,
+        # so the notification bell shows a realistic badge count.
+        #
+        # The ``thread_id`` and ``post_id`` values in payloads are
+        # approximate references to the seed data created above.
+        # =================================================================
         notif_data = [
+            # Reply notifications -- the most common type
             (
-                "alice",
-                "reply",
-                "New reply to your thread",
-                {"thread_id": 1, "post_id": 1, "from_user": "bob"},
+                "alice",  # Recipient of the notification
+                "reply",  # Notification type
+                "New reply to your thread",  # Display title
+                {"thread_id": 1, "post_id": 1, "from_user": "bob"},  # Context payload
             ),
             (
                 "alice",
@@ -2089,24 +2632,28 @@ def seed() -> None:
                 "New reply to your thread",
                 {"thread_id": 4, "post_id": 8, "from_user": "george"},
             ),
+            # Mention notification
             (
                 "bob",
                 "mention",
                 "You were mentioned in a post",
                 {"thread_id": 11, "post_id": 25, "from_user": "alice"},
             ),
+            # Friend request notification
             (
                 "charlie",
                 "friend_request",
                 "New friend request",
                 {"from_user": "ivan", "request_id": 18},
             ),
+            # More reply notifications (distributed across different users)
             (
                 "evan",
                 "reply",
                 "modmax replied to your post",
                 {"thread_id": 20, "post_id": 42, "from_user": "modmax"},
             ),
+            # Report notifications -- sent to admin/moderators
             (
                 "admin",
                 "report",
@@ -2119,18 +2666,21 @@ def seed() -> None:
                 "New content report submitted",
                 {"report_id": 2, "reporter": "hannah"},
             ),
+            # More reply notifications
             (
                 "hannah",
                 "reply",
                 "charlie replied to your thread",
                 {"thread_id": 9, "post_id": 20, "from_user": "charlie"},
             ),
+            # Friend accept notification
             (
                 "diana",
                 "friend_accept",
                 "modsara accepted your friend request",
                 {"from_user": "modsara"},
             ),
+            # Additional reply notifications across various users
             (
                 "george",
                 "reply",
@@ -2161,6 +2711,7 @@ def seed() -> None:
                 "bob replied to your thread",
                 {"thread_id": 12, "post_id": 28, "from_user": "bob"},
             ),
+            # Moderation warning notification
             (
                 "ivan",
                 "mod_warning",
@@ -2169,13 +2720,15 @@ def seed() -> None:
             ),
         ]
         for user_uname, notif_type, title, payload in notif_data:
+            # 60% of notifications are marked as read (random.random() > 0.4),
+            # giving the UI a realistic mix of read/unread items.
             is_read = random.random() > 0.4  # 60% read
             db.add(
                 Notification(
                     user_id=users[user_uname].id,
                     notification_type=notif_type,
                     title=title,
-                    payload=payload,
+                    payload=payload,  # JSON-serialisable dict stored as JSON column
                     is_read=is_read,
                 )
             )
@@ -2186,14 +2739,35 @@ def seed() -> None:
         # =================================================================
         # 12. AUDIT LOGS
         # =================================================================
+        # 30 audit log entries providing a chronological record of
+        # important platform actions.  The audit log is used by the admin
+        # dashboard's "Activity Log" tab for compliance and debugging.
+        #
+        # Format: (actor_username, action_constant, entity_type,
+        #          entity_id, human_readable_details)
+        #
+        # Action constants (e.g. "user_register", "thread_create") match
+        # the constants defined in ``shared/services/audit.py``.
+        #
+        # Each entry gets a random private IP address (192.168.1.x) to
+        # simulate the ``ip_address`` field that the real app captures
+        # from the HTTP request.
+        #
+        # The entries tell a story: admin created the platform, promoted
+        # moderators, created categories, users registered, content was
+        # posted, reports were filed and resolved, etc.
+        # =================================================================
         audit_data = [
+            # --- User registration events ---
             ("admin", "user_register", "user", 1, "Admin account created"),
             ("modmax", "user_register", "user", 2, "Moderator modmax registered"),
             ("modsara", "user_register", "user", 3, "Moderator modsara registered"),
             ("alice", "user_register", "user", 4, "User alice registered"),
             ("bob", "user_register", "user", 5, "User bob registered"),
+            # --- Role promotions (admin promoting users to moderator) ---
             ("admin", "user_role_change", "user", 2, "Changed role to moderator"),
             ("admin", "user_role_change", "user", 3, "Changed role to moderator"),
+            # --- Category creation events (admin bootstrapping the forum) ---
             (
                 "admin",
                 "category_create",
@@ -2244,6 +2818,7 @@ def seed() -> None:
                 8,
                 "Created category: Help and Support",
             ),
+            # --- Thread creation events ---
             ("admin", "thread_create", "thread", 1, "Created welcome thread"),
             (
                 "alice",
@@ -2259,6 +2834,7 @@ def seed() -> None:
                 5,
                 "Created thread: PostgreSQL optimization",
             ),
+            # --- Category moderator assignments ---
             (
                 "modmax",
                 "category_mod_assign",
@@ -2273,6 +2849,7 @@ def seed() -> None:
                 3,
                 "Assigned modsara to Frontend Engineering",
             ),
+            # --- Content report events ---
             (
                 "fiona",
                 "report_create",
@@ -2287,9 +2864,12 @@ def seed() -> None:
                 10,
                 "Resolved report: off-topic reply",
             ),
+            # --- Moderation action events ---
             ("modmax", "mod_action", "user", 12, "Warned ivan for off-topic posting"),
+            # --- Profile update events ---
             ("alice", "user_profile_update", "user", 4, "Updated bio"),
             ("bob", "user_profile_update", "user", 5, "Updated bio"),
+            # --- Chat room creation events ---
             ("admin", "chat_room_create", "chat_room", 1, "Created General Chat room"),
             ("alice", "chat_room_create", "chat_room", 2, "Created Backend Dev room"),
             (
@@ -2299,6 +2879,7 @@ def seed() -> None:
                 3,
                 "Created Frontend Dev room",
             ),
+            # --- Friend request events ---
             ("alice", "friend_request_send", "user", 5, "Sent friend request to bob"),
             (
                 "bob",
@@ -2316,6 +2897,8 @@ def seed() -> None:
                     entity_type=entity_type,
                     entity_id=entity_id,
                     details=details,
+                    # Simulated private IP address for the audit record.
+                    # Real app captures this from the HTTP request headers.
                     ip_address=f"192.168.1.{random.randint(10, 250)}",
                 )
             )
@@ -2324,14 +2907,25 @@ def seed() -> None:
         print(f"  - Created {len(audit_data)} audit log entries")
 
         # =================================================================
-        # 13. PIN the welcome thread, lock the guidelines thread
+        # 13. PIN the welcome thread, LOCK the guidelines thread
+        # =================================================================
+        # Special thread states that demonstrate the moderation features:
+        #
+        # - PINNED threads appear at the top of their category's thread
+        #   list, regardless of sort order.  Used for important announcements.
+        #
+        # - LOCKED threads cannot receive new replies.  Used for reference
+        #   material that shouldn't be buried under discussion.
+        #
+        # We query by title rather than hardcoding IDs because thread IDs
+        # depend on insertion order and database state.
         # =================================================================
         # Thread 1 = Welcome, Thread 3 = Community Guidelines
         welcome_thread = (
             db.query(Thread).filter_by(title="Welcome to PulseBoard!").first()
         )
         if welcome_thread:
-            welcome_thread.is_pinned = True
+            welcome_thread.is_pinned = True  # Pinned to top of General Discussion
 
         guidelines_thread = (
             db.query(Thread)
@@ -2339,13 +2933,26 @@ def seed() -> None:
             .first()
         )
         if guidelines_thread:
-            guidelines_thread.is_pinned = True
-            guidelines_thread.is_locked = True
+            guidelines_thread.is_pinned = True  # Also pinned to top
+            guidelines_thread.is_locked = True  # No new replies allowed
 
         # =================================================================
-        # COMMIT
+        # COMMIT -- make all changes permanent
+        # =================================================================
+        # Everything above used flush() (which sends SQL to the DB but
+        # doesn't commit).  This single commit() makes the entire seed
+        # operation atomic:
+        #   - If everything succeeded -> all data is saved
+        #   - If anything failed -> the except block rolls back everything
         # =================================================================
         db.commit()
+
+        # =================================================================
+        # FINAL SUMMARY
+        # =================================================================
+        # Print a human-readable summary of everything that was created.
+        # Useful for verifying the seed ran correctly and for demos.
+        # =================================================================
         print("\n[seed] Done! Database seeded successfully.")
         print(
             f"\n  Total: {len(users)} users, {len(categories)} categories, "
@@ -2367,11 +2974,23 @@ def seed() -> None:
         print("  Admin login: admin / password123")
 
     except Exception:
+        # Roll back the entire transaction on ANY failure.
+        # This ensures no partial/corrupt data is left in the database.
+        # The exception is re-raised so the caller sees the original error.
         db.rollback()
         raise
     finally:
+        # Always close the session to release the database connection
+        # back to the pool, even if an exception occurred.
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# Script entry point
+# ---------------------------------------------------------------------------
+# ``if __name__ == "__main__":`` ensures ``seed()`` only runs when the file
+# is executed directly (``python services/seed.py``), not when it's imported
+# as a module by tests or other scripts.
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     seed()

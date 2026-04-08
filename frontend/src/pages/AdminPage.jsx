@@ -1,3 +1,40 @@
+/**
+ * @fileoverview AdminPage - Staff dashboard for platform administration and moderation.
+ *
+ * This is the most complex page in the application, providing a tabbed interface
+ * with 7 sections for managing the platform:
+ *   1. **User Controls** (admin only): Promote/demote users, suspend/ban accounts.
+ *   2. **Moderators** (admin only): Assign/remove community access for moderators.
+ *   3. **Thread Controls** (admin + mod): Lock/unlock and pin/unpin threads.
+ *   4. **Reports** (admin + mod): Review content reports, take moderation actions.
+ *   5. **Create/Request Community** (admin creates directly, mod submits request).
+ *   6. **Community Requests** (admin reviews, mod views own requests).
+ *   7. **Activity Log** (admin + mod): Paginated audit trail with filters.
+ *
+ * Key architectural patterns to discuss in an interview:
+ *   - **Role-based tab visibility**: Tabs are conditionally rendered based on
+ *     `isAdmin` and `isStaff` flags. The "User Controls" and "Moderators" tabs
+ *     are admin-only. This is a presentation-layer guard; the backend also enforces
+ *     authorization on every API endpoint.
+ *   - **Deferred initial tab selection**: On first render, `profile` may be null
+ *     (still loading from AuthContext), so `isAdmin` is false. A `useEffect` watches
+ *     for the profile to load and corrects the initial tab if the user is an admin.
+ *     Without this, an admin would briefly see the wrong default tab.
+ *   - **Lazy tab data loading**: Each tab's data is loaded only when that tab becomes
+ *     active (via `useEffect` dependencies on `activeTab`). This avoids loading all
+ *     data upfront, which would be wasteful for tabs the user may never visit.
+ *   - **Inline moderation action form**: The Reports tab has an inline form for
+ *     issuing warn/suspend/ban actions directly from a report card. The `actionForm`
+ *     state tracks which report is being acted upon, preventing conflicts.
+ *   - **Real-time community updates**: Uses `useGlobalUpdates` to live-add new
+ *     communities created by other admins, keeping the category list fresh.
+ *   - **Two-tier community creation**: Admins create communities directly via POST
+ *     to `/categories`. Moderators submit a request that goes through an approval
+ *     workflow (pending -> approved/rejected).
+ *
+ * @module pages/AdminPage
+ */
+
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest, getHeaders } from '../lib/api';
@@ -6,31 +43,51 @@ import UserIdentity from '../components/UserIdentity';
 import Pagination from '../components/Pagination';
 import { formatTimeAgo } from '../lib/timeUtils';
 
+/**
+ * AdminPage component - renders the staff dashboard with tabbed sections.
+ *
+ * Access control: non-staff users see a "Staff Only" message.
+ * Admin users get all 7 tabs; moderators get 5 (no User Controls, no Moderators).
+ *
+ * @returns {JSX.Element}
+ */
 function AdminPage() {
   const { session, profile } = useAuth();
-  const [summary, setSummary] = useState(null);
-  const [users, setUsers] = useState([]);
-  const [threads, setThreads] = useState([]);
-  const [reports, setReports] = useState([]);
-  const [reportFilter, setReportFilter] = useState('pending');
+
+  // ---- Summary and main data ----
+  const [summary, setSummary] = useState(null);     // Platform stats (user count, reports, etc.)
+  const [users, setUsers] = useState([]);            // All users (admin only)
+  const [threads, setThreads] = useState([]);        // All threads for moderation
+  const [reports, setReports] = useState([]);        // Content reports
+  const [reportFilter, setReportFilter] = useState('pending'); // Report status filter
+
+  // ---- Community creation form ----
   const [communityForm, setCommunityForm] = useState({
     title: '',
     slug: '',
     description: '',
   });
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState('');         // Global feedback message
 
+  /** Role flags derived from the user's profile. */
   const isAdmin = profile?.role === 'admin';
   const isStaff = ['admin', 'moderator'].includes(profile?.role);
   const panelTitle = isAdmin ? 'Admin Dashboard' : 'Moderator Dashboard';
 
-  // Default tab: admin sees users, mod sees threads.
-  // On first render profile may be null so isAdmin is false — use 'threads' as
-  // initial value and correct it once the profile arrives.
+  // ---- Tab management ----
+  /**
+   * Default tab: admin sees 'users', mod sees 'threads'.
+   * On first render, profile may be null so isAdmin is false. We use 'threads'
+   * as the initial value and correct it once the profile arrives via useEffect.
+   */
   const [activeTab, setActiveTab] = useState('threads');
   const [tabInitialized, setTabInitialized] = useState(false);
 
-  // Once the profile loads, set the correct initial tab (admin -> 'users')
+  /**
+   * Once the profile loads, set the correct initial tab.
+   * The `tabInitialized` flag ensures this only runs once to avoid overriding
+   * the user's manual tab selection after the first correction.
+   */
   useEffect(() => {
     if (profile && !tabInitialized) {
       setTabInitialized(true);
@@ -40,31 +97,31 @@ function AdminPage() {
     }
   }, [profile, tabInitialized]);
 
-  // Action form state for moderation actions on reports
+  // ---- Moderation action form state (for reports tab) ----
   const [actionForm, setActionForm] = useState({
     reportId: null,
     targetUserId: null,
     targetUsername: '',
-    actionType: 'warn',
+    actionType: 'warn',    // 'warn' | 'suspend' | 'ban'
     reason: '',
-    durationHours: '',
+    durationHours: '',     // Only used for 'suspend'
   });
 
-  // Community assignment state (for promoting users to mod)
+  // ---- Community assignment state (for promoting users to mod) ----
   const [categories, setCategories] = useState([]);
-  const [assignModalUser, setAssignModalUser] = useState(null);
+  const [assignModalUser, setAssignModalUser] = useState(null);  // User being assigned communities
   const [selectedCategories, setSelectedCategories] = useState([]);
 
-  // Category requests state
+  // ---- Category requests state ----
   const [categoryRequests, setCategoryRequests] = useState([]);
   const [requestFilter, setRequestFilter] = useState('pending');
 
-  // Standalone moderator community management state
-  const [manageMod, setManageMod] = useState(null); // { id, username }
-  const [modCategoryIds, setModCategoryIds] = useState([]); // currently assigned
+  // ---- Standalone moderator community management ----
+  const [manageMod, setManageMod] = useState(null);       // { id, username } of mod being managed
+  const [modCategoryIds, setModCategoryIds] = useState([]); // Currently assigned category IDs
   const [modCatLoading, setModCatLoading] = useState(false);
 
-  // Audit log state
+  // ---- Audit log state ----
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditPage, setAuditPage] = useState(1);
   const [auditTotal, setAuditTotal] = useState(0);
@@ -72,6 +129,11 @@ function AdminPage() {
   const [auditActionFilter, setAuditActionFilter] = useState('');
   const [auditEntityFilter, setAuditEntityFilter] = useState('');
 
+  // ──────────────────────────────────────────────
+  // Data loading functions
+  // ──────────────────────────────────────────────
+
+  /** Loads all platform categories (for community assignment UI). */
   async function loadCategories() {
     try {
       const data = await apiRequest('/categories');
@@ -81,6 +143,10 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Loads the admin dashboard data: summary stats, threads, and (for admins) users.
+   * Uses Promise.all to fetch in parallel for faster load times.
+   */
   async function loadAdminData() {
     if (!session?.access_token || !isStaff) {
       return;
@@ -91,7 +157,7 @@ function AdminPage() {
         apiRequest('/admin/summary', { headers: getHeaders(session.access_token) }),
         apiRequest('/admin/threads', { headers: getHeaders(session.access_token) }),
       ];
-      // Only load users for admin
+      // Only admins can see the full user list
       if (isAdmin) {
         promises.push(
           apiRequest('/admin/users', { headers: getHeaders(session.access_token) })
@@ -108,6 +174,7 @@ function AdminPage() {
     }
   }
 
+  /** Loads content reports, filtered by the current `reportFilter` status. */
   async function loadReports() {
     if (!session?.access_token || !isStaff) return;
     try {
@@ -123,6 +190,7 @@ function AdminPage() {
     }
   }
 
+  /** Loads community creation requests, filtered by the current `requestFilter`. */
   async function loadCategoryRequests() {
     if (!session?.access_token || !isStaff) return;
     try {
@@ -138,6 +206,10 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Loads audit log entries with pagination and optional filters.
+   * The backend returns a paginated response: { items, total, total_pages }.
+   */
   async function loadAuditLogs() {
     if (!session?.access_token || !isStaff) return;
     try {
@@ -157,12 +229,20 @@ function AdminPage() {
     }
   }
 
+  // ──────────────────────────────────────────────
+  // Effect hooks for data loading
+  // ──────────────────────────────────────────────
+
+  /** Load admin data and categories on mount and when session/role changes. */
   useEffect(() => {
     loadAdminData();
     loadCategories();
   }, [session, profile?.role]);
 
-  // Real-time: add new communities as they are created
+  /**
+   * Real-time handler: live-add new communities created by other admins.
+   * useCallback ensures a stable reference to avoid unnecessary WS reconnections.
+   */
   const handleCategoryCreated = useCallback((category) => {
     setCategories((prev) => {
       if (prev.some((c) => c.id === category.id)) return prev;
@@ -172,31 +252,38 @@ function AdminPage() {
 
   useGlobalUpdates({ onCategoryCreated: handleCategoryCreated });
 
+  /** Reset tab to 'threads' if a non-admin lands on the 'users' tab. */
   useEffect(() => {
-    // Reset default tab when role changes
     if (!isAdmin && activeTab === 'users') {
       setActiveTab('threads');
     }
   }, [isAdmin]);
 
+  /** Lazy-load reports when the Reports tab is active or the filter changes. */
   useEffect(() => {
     if (activeTab === 'reports') {
       loadReports();
     }
   }, [activeTab, reportFilter, session]);
 
+  /** Lazy-load category requests when the Requests tab is active. */
   useEffect(() => {
     if (activeTab === 'requests') {
       loadCategoryRequests();
     }
   }, [activeTab, requestFilter, session]);
 
+  /** Lazy-load audit logs when the Activity tab is active or filters change. */
   useEffect(() => {
     if (activeTab === 'activity') {
       loadAuditLogs();
     }
   }, [activeTab, auditPage, auditActionFilter, auditEntityFilter, session]);
 
+  /**
+   * Filters the user list to only show users the admin can act upon.
+   * Memoized to avoid re-filtering on every render.
+   */
   const manageableUsers = useMemo(
     () =>
       users.filter(
@@ -205,6 +292,15 @@ function AdminPage() {
     [users]
   );
 
+  // ──────────────────────────────────────────────
+  // Action handlers
+  // ──────────────────────────────────────────────
+
+  /**
+   * Generic user action handler (suspend/unsuspend, ban/unban).
+   * @param {number} userId
+   * @param {string} path - API path (e.g., `/admin/users/5/suspend`).
+   */
   async function handleUserAction(userId, path) {
     try {
       const data = await apiRequest(path, {
@@ -218,6 +314,10 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Generic thread action handler (lock/unlock, pin/unpin).
+   * @param {string} path - API path (e.g., `/admin/threads/3/lock`).
+   */
   async function handleThreadAction(path) {
     try {
       const data = await apiRequest(path, {
@@ -231,6 +331,13 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Changes a user's role (member <-> moderator).
+   * If promoting to moderator, opens the community assignment modal.
+   *
+   * @param {number} userId
+   * @param {string} role - New role ('moderator' or 'member').
+   */
   async function handleRoleChange(userId, role) {
     try {
       const data = await apiRequest(`/admin/users/${userId}/role`, {
@@ -239,8 +346,8 @@ function AdminPage() {
         body: JSON.stringify({ role }),
       });
       setMessage(`${data.username} is now ${data.role}.`);
-      // If promoting to moderator, show community assignment modal
-      if (role === 'MODERATOR') {
+      // If promoting to moderator, show the community assignment modal
+      if (role === 'moderator') {
         setAssignModalUser({ id: userId, username: data.username });
         setSelectedCategories([]);
       }
@@ -250,6 +357,10 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Assigns selected communities to a newly promoted moderator.
+   * Iterates through selectedCategories and makes an API call for each.
+   */
   async function handleAssignCategories() {
     if (!assignModalUser) return;
     try {
@@ -273,6 +384,10 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Toggles a category in the selection list (for the assignment modal).
+   * @param {number} catId - The category ID to toggle.
+   */
   function toggleCategorySelection(catId) {
     setSelectedCategories((prev) =>
       prev.includes(catId)
@@ -281,6 +396,12 @@ function AdminPage() {
     );
   }
 
+  /**
+   * Opens the inline community manager for a specific moderator.
+   * Loads their currently assigned categories from the API.
+   *
+   * @param {Object} user - The moderator user object.
+   */
   async function openManageMod(user) {
     setManageMod({ id: user.id, username: user.username });
     setModCatLoading(true);
@@ -296,6 +417,12 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Toggles a community assignment for the currently managed moderator.
+   * Uses POST to assign and DELETE to remove.
+   *
+   * @param {number} catId - The category ID to toggle.
+   */
   async function handleToggleModCategory(catId) {
     if (!manageMod) return;
     const isAssigned = modCategoryIds.includes(catId);
@@ -308,6 +435,7 @@ function AdminPage() {
           category_id: catId,
         }),
       });
+      // Optimistically update the local list
       setModCategoryIds((prev) =>
         isAssigned ? prev.filter((id) => id !== catId) : [...prev, catId]
       );
@@ -321,10 +449,16 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Creates a community (admin) or submits a community request (moderator).
+   * The same form is used for both; the backend endpoint differs based on role.
+   *
+   * @param {Event} event - The form submit event.
+   */
   async function handleCommunityCreate(event) {
     event.preventDefault();
     if (isAdmin) {
-      // Admin creates directly
+      // Admin creates the community directly
       try {
         const data = await apiRequest('/categories', {
           method: 'POST',
@@ -338,7 +472,7 @@ function AdminPage() {
         setMessage(error.message);
       }
     } else {
-      // Moderator submits a request
+      // Moderator submits a request for admin approval
       try {
         const data = await apiRequest('/admin/category-requests', {
           method: 'POST',
@@ -354,6 +488,11 @@ function AdminPage() {
     }
   }
 
+  /**
+   * Resolves a content report by changing its status.
+   * @param {number} reportId
+   * @param {'resolved'|'dismissed'} newStatus
+   */
   async function handleResolveReport(reportId, newStatus) {
     try {
       const data = await apiRequest(`/admin/reports/${reportId}/resolve`, {
@@ -363,12 +502,17 @@ function AdminPage() {
       });
       setMessage(data.message);
       await loadReports();
-      await loadAdminData();
+      await loadAdminData(); // Refresh summary stats (pending report count)
     } catch (error) {
       setMessage(error.message);
     }
   }
 
+  /**
+   * Reviews a community creation request (admin only).
+   * @param {number} requestId
+   * @param {'approved'|'rejected'} newStatus
+   */
   async function handleReviewRequest(requestId, newStatus) {
     try {
       const data = await apiRequest(
@@ -383,12 +527,18 @@ function AdminPage() {
         `Community request r/${data.slug} ${data.status}.`
       );
       await loadCategoryRequests();
-      await loadCategories();
+      await loadCategories(); // Refresh categories if approved
     } catch (error) {
       setMessage(error.message);
     }
   }
 
+  /**
+   * Opens the inline moderation action form for a specific report.
+   * Pre-populates the form with the report's reason and target user info.
+   *
+   * @param {Object} report - The report object to act on.
+   */
   function openActionForm(report) {
     setActionForm({
       reportId: report.id,
@@ -400,6 +550,7 @@ function AdminPage() {
     });
   }
 
+  /** Closes/resets the moderation action form. */
   function closeActionForm() {
     setActionForm({
       reportId: null,
@@ -411,6 +562,12 @@ function AdminPage() {
     });
   }
 
+  /**
+   * Submits a moderation action (warn/suspend/ban) against a user.
+   * Links the action to the originating report via `report_id`.
+   *
+   * @param {Event} event - The form submit event.
+   */
   async function handleModerateUser(event) {
     event.preventDefault();
     if (!actionForm.targetUserId) return;
@@ -420,6 +577,7 @@ function AdminPage() {
         reason: actionForm.reason,
         report_id: actionForm.reportId,
       };
+      // Duration is only applicable for suspend actions
       if (actionForm.actionType === 'suspend' && actionForm.durationHours) {
         payload.duration_hours = parseInt(actionForm.durationHours, 10);
       }
@@ -442,6 +600,11 @@ function AdminPage() {
     }
   }
 
+  // ──────────────────────────────────────────────
+  // Render: access control gate
+  // ──────────────────────────────────────────────
+
+  /** Non-staff users see a restricted access message. */
   if (!isStaff) {
     return (
       <section className="page-grid admin-layout">
@@ -456,13 +619,17 @@ function AdminPage() {
     );
   }
 
+  // ──────────────────────────────────────────────
+  // Render: main dashboard
+  // ──────────────────────────────────────────────
+
   return (
     <section className="page-grid admin-layout">
-      {/* Dashboard header */}
+      {/* Dashboard header with role indicator */}
       <h3>{panelTitle}</h3>
       <span className="muted-copy">{profile?.role} tools</span>
 
-      {/* Stat cards */}
+      {/* ── Stat Cards ── */}
       {summary ? (
         <div className="stat-grid">
           <div className="stat-card">
@@ -498,9 +665,9 @@ function AdminPage() {
 
       {message && <p className="success-copy">{message}</p>}
 
-      {/* Tabbed sections */}
+      {/* ── Tab Bar ── */}
       <div className="admin-tabs">
-        {/* User Controls tab — admin only */}
+        {/* User Controls and Moderators tabs — admin only */}
         {isAdmin && (
           <button
             className={activeTab === 'users' ? 'admin-tab active' : 'admin-tab'}
@@ -532,6 +699,7 @@ function AdminPage() {
           onClick={() => setActiveTab('reports')}
         >
           Reports
+          {/* Badge showing number of pending reports */}
           {summary?.pending_reports > 0 && (
             <span className="notif-badge">{summary.pending_reports}</span>
           )}
@@ -559,7 +727,9 @@ function AdminPage() {
         </button>
       </div>
 
-      {/* User Controls tab — admin only */}
+      {/* ────────────────────────────────────────
+       * TAB 1: User Controls (admin only)
+       * ──────────────────────────────────────── */}
       {isAdmin && activeTab === 'users' && (
         <div className="panel stack-gap">
           <h3>User Controls</h3>
@@ -578,12 +748,13 @@ function AdminPage() {
                     {user.email} &middot; {user.role}
                   </p>
                 </div>
+                {/* Action buttons: promote/demote, suspend/unsuspend, ban/unban */}
                 <div className="admin-list-item-actions">
                   {user.can_change_role && user.role !== 'moderator' && (
                     <button
                       className="secondary-button"
                       type="button"
-                      onClick={() => handleRoleChange(user.id, 'MODERATOR')}
+                      onClick={() => handleRoleChange(user.id, 'moderator')}
                     >
                       Promote
                     </button>
@@ -592,7 +763,7 @@ function AdminPage() {
                     <button
                       className="secondary-button"
                       type="button"
-                      onClick={() => handleRoleChange(user.id, 'MEMBER')}
+                      onClick={() => handleRoleChange(user.id, 'member')}
                     >
                       Demote
                     </button>
@@ -636,14 +807,10 @@ function AdminPage() {
         </div>
       )}
 
-      {/* Community assignment modal after promoting to mod */}
+      {/* ── Community Assignment Modal (shown after promoting to moderator) ── */}
       {assignModalUser && (
-        <>
-          <div
-            className="drawer-backdrop"
-            onClick={() => setAssignModalUser(null)}
-          />
-          <div className="modal-card">
+        <div className="modal-backdrop" onClick={() => setAssignModalUser(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <h4>Assign communities to {assignModalUser.username}</h4>
             <p className="muted-copy">
               Select which communities this moderator can manage.
@@ -684,10 +851,12 @@ function AdminPage() {
               </button>
             </div>
           </div>
-        </>
+        </div>
       )}
 
-      {/* Moderators tab — manage community assignments for existing mods */}
+      {/* ────────────────────────────────────────
+       * TAB 2: Moderators (admin only)
+       * ──────────────────────────────────────── */}
       {isAdmin && activeTab === 'moderators' && (
         <div className="panel stack-gap">
           <h3>Moderator Communities</h3>
@@ -717,7 +886,7 @@ function AdminPage() {
               ))}
           </div>
 
-          {/* Inline community manager for selected mod */}
+          {/* Inline community manager for the selected moderator */}
           {manageMod && (
             <div className="panel stack-gap" style={{ marginTop: 'var(--space-4)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -740,6 +909,7 @@ function AdminPage() {
                       className="community-assign-item"
                     >
                       <span>r/{cat.slug}</span>
+                      {/* Toggle button: checkmark if assigned, plus if not */}
                       <button
                         type="button"
                         className="community-assign-btn"
@@ -756,7 +926,9 @@ function AdminPage() {
         </div>
       )}
 
-      {/* Thread Controls tab */}
+      {/* ────────────────────────────────────────
+       * TAB 3: Thread Controls
+       * ──────────────────────────────────────── */}
       {activeTab === 'threads' && (
         <div className="panel stack-gap">
           <h3>Thread Controls</h3>
@@ -777,6 +949,7 @@ function AdminPage() {
                     r/{thread.category} &middot; by {thread.author}
                   </p>
                 </div>
+                {/* Toggle lock/unlock and pin/unpin */}
                 <div className="admin-list-item-actions">
                   <button
                     className="secondary-button"
@@ -811,13 +984,15 @@ function AdminPage() {
         </div>
       )}
 
-      {/* Reports tab */}
+      {/* ────────────────────────────────────────
+       * TAB 4: Reports
+       * ──────────────────────────────────────── */}
       {activeTab === 'reports' && (
         <div className="panel stack-gap">
           <h3>Content Reports</h3>
           <span className="muted-copy">Review and act on user reports</span>
 
-          {/* Filter pills */}
+          {/* Status filter pills: pending, resolved, dismissed, all */}
           <div className="pill-row">
             {['pending', 'resolved', 'dismissed', ''].map((f) => (
               <button
@@ -842,6 +1017,7 @@ function AdminPage() {
             )}
             {reports.map((report) => (
               <div key={report.id} className="admin-report-card">
+                {/* Report metadata: status badge, entity type, category, date */}
                 <div className="thread-card-meta">
                   <span
                     className={`report-status-badge report-status-${report.status}`}
@@ -861,6 +1037,7 @@ function AdminPage() {
                   </span>
                 </div>
 
+                {/* Report details: content preview, author, reporter, reason */}
                 <div>
                   <p className="muted-copy">
                     {report.content_snippet || '[content unavailable]'}
@@ -887,6 +1064,7 @@ function AdminPage() {
                   )}
                 </div>
 
+                {/* Actions for pending reports: Take Action, Resolve, Dismiss */}
                 {report.status === 'pending' && (
                   <div className="edit-inline-actions">
                     <button
@@ -915,7 +1093,7 @@ function AdminPage() {
                   </div>
                 )}
 
-                {/* Inline moderation action form */}
+                {/* Inline moderation action form (warn/suspend/ban) */}
                 {actionForm.reportId === report.id && (
                   <form
                     className="mod-action-form"
@@ -938,12 +1116,14 @@ function AdminPage() {
                       >
                         <option value="warn">Warn</option>
                         <option value="suspend">Suspend</option>
+                        {/* Ban option only available to admins */}
                         {isAdmin && (
                           <option value="ban">Ban</option>
                         )}
                       </select>
                     </div>
 
+                    {/* Duration field — only shown for suspend actions */}
                     {actionForm.actionType === 'suspend' && (
                       <div className="mod-action-form-row">
                         <label>Duration (hours):</label>
@@ -998,7 +1178,9 @@ function AdminPage() {
         </div>
       )}
 
-      {/* Create / Request Community tab */}
+      {/* ────────────────────────────────────────
+       * TAB 5: Create / Request Community
+       * ──────────────────────────────────────── */}
       {activeTab === 'community' && (
         <div className="panel stack-gap">
           <h3>{isAdmin ? 'Create Community' : 'Request Community'}</h3>
@@ -1017,6 +1199,7 @@ function AdminPage() {
               }
               required
             />
+            {/* Slug input: auto-lowercases and replaces non-alphanumeric with dashes */}
             <input
               className="input"
               placeholder="community-slug"
@@ -1044,7 +1227,9 @@ function AdminPage() {
         </div>
       )}
 
-      {/* Community Requests tab */}
+      {/* ────────────────────────────────────────
+       * TAB 6: Community Requests
+       * ──────────────────────────────────────── */}
       {activeTab === 'requests' && (
         <div className="panel stack-gap">
           <h3>Community Requests</h3>
@@ -1054,7 +1239,7 @@ function AdminPage() {
               : 'Your community requests'}
           </span>
 
-          {/* Filter pills */}
+          {/* Status filter pills */}
           <div className="pill-row">
             {['pending', 'approved', 'rejected', ''].map((f) => (
               <button
@@ -1108,6 +1293,7 @@ function AdminPage() {
                   )}
                 </div>
 
+                {/* Approve/Reject buttons — admin only, pending requests only */}
                 {isAdmin && req.status === 'pending' && (
                   <div className="edit-inline-actions">
                     <button
@@ -1132,13 +1318,15 @@ function AdminPage() {
         </div>
       )}
 
-      {/* Activity Log tab */}
+      {/* ────────────────────────────────────────
+       * TAB 7: Activity Log (Audit Trail)
+       * ──────────────────────────────────────── */}
       {activeTab === 'activity' && (
         <div className="panel stack-gap">
           <h3>Activity Log</h3>
           <span className="muted-copy">Audit trail of actions across the platform</span>
 
-          {/* Filters */}
+          {/* Filters: action type dropdown and entity type dropdown */}
           <div className="audit-log-filters">
             <div className="audit-filter-group">
               <label className="audit-filter-label">Action</label>
@@ -1147,7 +1335,7 @@ function AdminPage() {
                 value={auditActionFilter}
                 onChange={(e) => {
                   setAuditActionFilter(e.target.value);
-                  setAuditPage(1);
+                  setAuditPage(1); // Reset to page 1 when filter changes
                 }}
               >
                 <option value="">All actions</option>
@@ -1207,7 +1395,7 @@ function AdminPage() {
                 value={auditEntityFilter}
                 onChange={(e) => {
                   setAuditEntityFilter(e.target.value);
-                  setAuditPage(1);
+                  setAuditPage(1); // Reset to page 1 when filter changes
                 }}
               >
                 <option value="">All entities</option>
@@ -1223,7 +1411,7 @@ function AdminPage() {
             </div>
           </div>
 
-          {/* Log entries */}
+          {/* Audit log entries list */}
           <div className="audit-log-list">
             {auditLogs.length === 0 && (
               <p className="muted-copy">No activity log entries found.</p>
@@ -1231,6 +1419,7 @@ function AdminPage() {
             {auditLogs.map((log) => (
               <div key={log.id} className="audit-log-entry">
                 <div className="audit-log-entry-header">
+                  {/* Color-coded action badge (CSS class derived from action prefix) */}
                   <span className={`audit-log-action audit-action-${log.action.split('_')[0]}`}>
                     {log.action.replace(/_/g, ' ')}
                   </span>
@@ -1245,6 +1434,7 @@ function AdminPage() {
                   <span className="audit-log-actor">
                     {log.actor_username || 'System'}
                   </span>
+                  {/* Parse JSON details into a readable string */}
                   {log.details && (
                     <span className="audit-log-details">
                       {(() => {
@@ -1264,6 +1454,7 @@ function AdminPage() {
             ))}
           </div>
 
+          {/* Pagination for audit logs */}
           <Pagination
             currentPage={auditPage}
             totalPages={auditTotalPages}

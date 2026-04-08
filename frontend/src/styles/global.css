@@ -1915,6 +1915,17 @@ label {
   animation: fadeIn var(--transition-fast) ease;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn var(--transition-fast) ease;
+}
+
 .modal-card {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);

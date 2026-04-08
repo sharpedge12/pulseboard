@@ -1,3 +1,31 @@
+/**
+ * @fileoverview DashboardPage — Personalized member hub with stats and shortcuts.
+ *
+ * This page provides a quick overview for authenticated users, including:
+ *   1. Quick stats: unread notifications, friend count, pending requests, total threads.
+ *   2. Quick action buttons: create thread, open chat, find people, edit profile.
+ *   3. Recent notifications (up to 5) with type badges and timestamps.
+ *   4. Latest forum threads (up to 5) with metadata and a "View all" link.
+ *   5. Friends preview (up to 8) with avatars and profile links.
+ *
+ * Key architectural patterns to discuss in an interview:
+ *   - **Promise.allSettled for resilient data loading**: Unlike Promise.all (which
+ *     rejects if ANY promise fails), Promise.allSettled waits for ALL promises to
+ *     complete and reports each one's status individually. This means a failure in
+ *     the notifications API won't prevent threads and friends from rendering.
+ *     The error state is only shown when ALL three requests fail.
+ *   - **Defensive data access**: After Promise.allSettled, each result is checked
+ *     for `status === 'fulfilled'` before accessing its value. This prevents
+ *     "Cannot read property of undefined" errors when an endpoint is down.
+ *   - **Navigation shortcuts**: The quick action buttons use `useNavigate()` to
+ *     route to other pages. "Create Thread" navigates to the home page where the
+ *     composer can be opened — this avoids duplicating the thread creation UI.
+ *   - **Avatar URL guard**: Same pattern as other pages — checks `startsWith('http')`
+ *     to handle both OAuth external URLs and uploaded relative paths.
+ *
+ * @module pages/DashboardPage
+ */
+
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -5,19 +33,31 @@ import { apiRequest, getHeaders, assetUrl } from '../lib/api';
 import { formatTimeAgo } from '../lib/timeUtils';
 
 /**
- * Member Dashboard — a personalized hub for regular members.
+ * DashboardPage component — a personalized hub for regular members.
  * Shows quick stats, recent threads, friend count, and shortcuts.
+ *
+ * @returns {JSX.Element}
  */
 function DashboardPage() {
   const navigate = useNavigate();
   const { session, profile } = useAuth();
-  const [stats, setStats] = useState(null);
-  const [recentThreads, setRecentThreads] = useState([]);
-  const [friendData, setFriendData] = useState(null);
-  const [notifications, setNotifications] = useState(null);
+
+  // ── Dashboard data state ──
+  const [stats, setStats] = useState(null);                // Aggregated stats object
+  const [recentThreads, setRecentThreads] = useState([]);   // Latest 5 threads
+  const [friendData, setFriendData] = useState(null);       // Friends data (friends, incoming, outgoing)
+  const [notifications, setNotifications] = useState(null);  // Notifications with items and unread_count
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  /**
+   * Loads all dashboard data in parallel using Promise.allSettled.
+   *
+   * Interview note: Promise.allSettled is the key pattern here. It ensures
+   * that a single failing endpoint doesn't break the entire dashboard.
+   * Each result has a `status` of either 'fulfilled' (with `.value`) or
+   * 'rejected' (with `.reason`).
+   */
   useEffect(() => {
     if (!session?.access_token) {
       setLoading(false);
@@ -30,13 +70,14 @@ function DashboardPage() {
 
       const headers = getHeaders(session.access_token);
 
-      // Fetch each endpoint independently so one failure doesn't block all
+      // Fetch all three endpoints independently — one failure won't block others
       const [threadsResult, friendsResult, notifResult] = await Promise.allSettled([
         apiRequest('/threads?page=1&page_size=5&sort=new'),
         apiRequest('/users/friends', { headers }),
         apiRequest('/notifications', { headers }),
       ]);
 
+      // Safely extract values — null if the request failed
       const threadsData = threadsResult.status === 'fulfilled' ? threadsResult.value : null;
       const friendsData = friendsResult.status === 'fulfilled' ? friendsResult.value : null;
       const notifData = notifResult.status === 'fulfilled' ? notifResult.value : null;
@@ -44,6 +85,8 @@ function DashboardPage() {
       setRecentThreads(threadsData?.items || []);
       setFriendData(friendsData);
       setNotifications(notifData);
+
+      // Build aggregated stats from the individual responses
       setStats({
         totalThreads: threadsData?.total || 0,
         friends: friendsData?.friends?.length || 0,
@@ -51,7 +94,7 @@ function DashboardPage() {
         unreadNotifications: notifData?.unread_count || 0,
       });
 
-      // Show error only when all three fail
+      // Only show an error message if ALL three endpoints failed
       if (
         threadsResult.status === 'rejected' &&
         friendsResult.status === 'rejected' &&
@@ -66,6 +109,7 @@ function DashboardPage() {
     loadDashboard();
   }, [session?.access_token]);
 
+  // Gate: unauthenticated users see a sign-in prompt
   if (!profile) {
     return (
       <section className="page-grid feed-layout">
@@ -90,7 +134,7 @@ function DashboardPage() {
 
         {!loading && stats && (
           <>
-            {/* Quick stats */}
+            {/* ── Quick Stats Grid ── */}
             <div className="stat-grid">
               <div className="stat-card">
                 <span className="stat-number">{stats.unreadNotifications}</span>
@@ -110,7 +154,7 @@ function DashboardPage() {
               </div>
             </div>
 
-            {/* Quick actions */}
+            {/* ── Quick Action Buttons ── */}
             <div className="quick-actions">
               <button
                 className="action-button"
@@ -142,7 +186,7 @@ function DashboardPage() {
               </button>
             </div>
 
-            {/* Recent unread notifications */}
+            {/* ── Recent Notifications ── */}
             {notifications && notifications.items && notifications.items.length > 0 && (
               <div className="dash-section">
                 <h3>Recent Notifications</h3>
@@ -154,6 +198,7 @@ function DashboardPage() {
                     >
                       <span className="dash-notif-title">{notif.title}</span>
                       <div className="edit-inline-actions">
+                        {/* Replace underscores with spaces for display (e.g., "friend_request" -> "friend request") */}
                         <span className="dash-notif-type">{notif.notification_type.replace(/_/g, ' ')}</span>
                         <span className="dash-notif-time">{formatTimeAgo(notif.created_at)}</span>
                       </div>
@@ -163,7 +208,7 @@ function DashboardPage() {
               </div>
             )}
 
-            {/* Recent threads */}
+            {/* ── Latest Threads ── */}
             {recentThreads.length > 0 && (
               <div className="dash-section">
                 <h3>Latest Threads</h3>
@@ -194,7 +239,7 @@ function DashboardPage() {
               </div>
             )}
 
-            {/* Friends list preview */}
+            {/* ── Friends Preview (up to 8 chips) ── */}
             {friendData && friendData.friends && friendData.friends.length > 0 && (
               <div className="dash-section">
                 <h3>Friends</h3>
